@@ -43,7 +43,7 @@ def build_invoice_pdf(invoice: dict, client: dict, project: dict, profile: dict,
     left = [P(profile.get("company_name") or "Your Company", ParagraphStyle("co", parent=bold, fontSize=14, leading=18))]
     left += [P(x, small) for x in company]
     paid = invoice.get("status") == "Paid"
-    status_text = f"PAID{' on ' + invoice['paid_date'] if invoice.get('paid_date') else ''}" if paid else "UNPAID"
+    status_text = f"PAID{' on ' + invoice['paid_date'] if invoice.get('paid_date') else ''}" if paid else ""
     status_color = "#16a34a" if paid else "#dc2626"
     rt = [Paragraph("INVOICE", title),
           P(f"No. {invoice.get('invoice_number') or '-'}", right_bold),

@@ -2,42 +2,212 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Field Service CRM</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>HandyCRM — Field Service Management</title>
+  <!-- Inter Font (Matches Design System) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <!-- ZONE 1: NAVIGATION TREE -->
-  <aside class="sidebar">
-    <div class="side-top">
-      <strong>Clients</strong>
-      <button class="btn green" data-add="client">+ Client</button>
-    </div>
-    <div class="filter">
-      <button class="chip active" data-filter="all">All Clients</button>
-      <button class="chip" data-filter="unpaid">🔴 Unpaid Only</button>
-    </div>
-    <div id="tree" class="tree"></div>
-    <div class="side-bottom">
-      <button class="link" data-view="profile">⚙️ My Profile</button>
-      <button class="link" data-view="report">📊 Income &amp; Expense Report</button>
-    </div>
-  </aside>
+  <div class="app-shell">
+    <!-- MOBILE BACKDROP OVERLAY -->
+    <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
 
-  <!-- ZONE 2: WORKSPACE -->
-  <main class="work">
-    <div class="topbar"><span id="crumbs"></span><span id="saveState" class="save"></span></div>
-    <div id="workspace" class="workspace"></div>
-  </main>
+    <!-- SIDEBAR NAVIGATION (Desktop Fixed / Mobile Slide-Out Drawer) -->
+    <aside id="sidebar" class="sidebar" aria-label="Main Navigation">
+      <!-- Brand Header -->
+      <div class="sidebar-brand">
+        <div class="brand-logo" aria-hidden="true">
+          <svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect width="28" height="28" rx="7" fill="#2563EB"/>
+            <path d="M6 13.5L14 7L22 13.5V21C22 21.5523 21.5523 22 21 22H7C6.44772 22 6 21.5523 6 21V13.5Z" stroke="white" stroke-width="2" stroke-linejoin="round"/>
+            <rect x="11.5" y="14.5" width="5" height="5" rx="0.5" fill="white"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-title">Handy<span class="brand-accent">CRM</span></span>
+          <span class="brand-subtitle">Field Service SaaS</span>
+        </div>
+        <button id="closeDrawerBtn" class="icon-btn mobile-only" aria-label="Close Menu">✕</button>
+      </div>
 
-  <!-- ZONE 3: UNIFIED INPUT BAR (always here; wired up in a later step) -->
-  <footer class="input-bar">
-    <input id="uiText" type="text" placeholder="Type a command... (coming in a later step)" disabled>
-    <button class="icon" disabled title="Voice">🎤</button>
-    <button class="icon" disabled title="Photo">📷</button>
-    <button class="icon" disabled title="Send">➤</button>
-  </footer>
+      <!-- Active User & Role Switcher Card -->
+      <div class="user-card">
+        <div class="user-avatar" id="userAvatar">AJ</div>
+        <div class="user-info">
+          <div class="user-name" id="activeUserName">Alex Johnson</div>
+          <div class="role-selector-wrap">
+            <label for="roleSwitcher" class="sr-only">Active Role</label>
+            <select id="roleSwitcher" class="role-select" title="Switch active role to verify permissions">
+              <option value="Owner">Owner (Full Access)</option>
+              <option value="Manager">Manager (Operations)</option>
+              <option value="Employee">Employee (Field Tech)</option>
+            </select>
+          </div>
+        </div>
+      </div>
 
+      <!-- Employee Switcher (Visible when Employee role is active so you can test as specific techs) -->
+      <div id="employeePersonaBar" class="persona-bar" hidden>
+        <label for="activeEmployeeSelect">Viewing as Tech:</label>
+        <select id="activeEmployeeSelect" class="persona-select"></select>
+      </div>
+
+      <!-- Primary Navigation Menu -->
+      <nav class="sidebar-nav">
+        <div class="nav-section-label">Operations</div>
+        <button class="nav-item active" data-nav="tasks">
+          <span class="nav-icon">☑️</span>
+          <span class="nav-label">Tasks</span>
+          <span id="navTasksCount" class="nav-pill">0</span>
+        </button>
+        <button class="nav-item" data-nav="clients">
+          <span class="nav-icon">👥</span>
+          <span class="nav-label">Clients</span>
+        </button>
+        <button class="nav-item" data-nav="projects">
+          <span class="nav-icon">📁</span>
+          <span class="nav-label">Projects</span>
+        </button>
+        <button class="nav-item" data-nav="employees" data-role-hide="Employee">
+          <span class="nav-icon">👷</span>
+          <span class="nav-label">Employees</span>
+        </button>
+
+        <div class="nav-section-label" data-role-hide="Employee">Finances</div>
+        <button class="nav-item" data-nav="estimates" data-role-hide="Employee">
+          <span class="nav-icon">📋</span>
+          <span class="nav-label">Estimates</span>
+        </button>
+        <button class="nav-item" data-nav="invoices" data-role-hide="Employee">
+          <span class="nav-icon">🧾</span>
+          <span class="nav-label">Invoices</span>
+          <span id="navUnpaidBadge" class="nav-pill pill-danger" hidden>0</span>
+        </button>
+        <button class="nav-item" data-nav="expenses">
+          <span class="nav-icon">💳</span>
+          <span class="nav-label">Expenses &amp; Receipts</span>
+        </button>
+        <button class="nav-item" data-nav="reports" data-role-hide="Employee">
+          <span class="nav-icon">📊</span>
+          <span class="nav-label">Reports</span>
+        </button>
+
+        <div class="nav-section-label">System</div>
+        <button class="nav-item" data-nav="notifications">
+          <span class="nav-icon">🔔</span>
+          <span class="nav-label">Notifications</span>
+          <span id="navNotifBadge" class="nav-pill pill-danger" hidden>0</span>
+        </button>
+        <button class="nav-item" data-nav="settings">
+          <span class="nav-icon">⚙️</span>
+          <span class="nav-label">Settings</span>
+        </button>
+      </nav>
+
+      <!-- Sidebar Footer -->
+      <div class="sidebar-footer">
+        <button id="refreshDataBtn" class="sidebar-footer-btn" title="Sync latest data from backend">
+          <span>🔄</span> Sync Data
+        </button>
+      </div>
+    </aside>
+
+    <!-- MAIN CONTENT COLUMN -->
+    <div class="main-column">
+      <!-- Top Header Bar (Desktop & Mobile) -->
+      <header class="topbar">
+        <div class="topbar-left">
+          <button id="openDrawerBtn" class="icon-btn mobile-only" aria-label="Open Navigation Menu">
+            ☰
+          </button>
+          <button id="topbarBackBtn" class="back-btn" hidden>
+            ← Back
+          </button>
+          <div class="topbar-titles">
+            <h1 id="pageTitle" class="page-title">Tasks</h1>
+            <nav id="breadcrumbs" class="breadcrumbs" aria-label="Breadcrumb"></nav>
+          </div>
+        </div>
+
+        <div class="topbar-right">
+          <!-- Global Search Input -->
+          <div id="globalSearchWrap" class="search-box">
+            <span class="search-icon" aria-hidden="true">🔍</span>
+            <input
+              id="globalSearchInput"
+              type="search"
+              placeholder="Search tasks, clients, projects..."
+              autocomplete="off"
+            >
+          </div>
+
+          <!-- Save / Sync Status Indicator (used by api.js setSave) -->
+          <span id="saveState" class="save" role="status" aria-live="polite"></span>
+
+          <!-- Context Primary Action Button -->
+          <div id="topbarActions" class="topbar-actions"></div>
+        </div>
+      </header>
+
+      <!-- Role / Approval Info Banner (Dynamic) -->
+      <div id="roleNoticeBanner" class="role-banner" hidden></div>
+
+      <!-- Dynamic View Container -->
+      <main id="workspace" class="workspace" tabindex="-1">
+        <div class="loading-state">
+          <div class="spinner"></div>
+          <p>Loading HandyCRM workspace...</p>
+        </div>
+      </main>
+
+      <!-- Mobile Floating Action Button (FAB) -->
+      <button id="mobileFab" class="mobile-fab mobile-only" aria-label="Create New">+</button>
+
+      <!-- Mobile Bottom Navigation Bar -->
+      <nav class="mobile-bottom-nav mobile-only" aria-label="Mobile Quick Navigation">
+        <button class="mob-nav-item active" data-nav="tasks">
+          <span class="mob-icon">☑️</span>
+          <span class="mob-label">Tasks</span>
+        </button>
+        <button class="mob-nav-item" data-nav="clients">
+          <span class="mob-icon">👥</span>
+          <span class="mob-label">Clients</span>
+        </button>
+        <button class="mob-nav-item" data-nav="projects">
+          <span class="mob-icon">📁</span>
+          <span class="mob-label">Projects</span>
+        </button>
+        <button class="mob-nav-item" data-nav="expenses">
+          <span class="mob-icon">💳</span>
+          <span class="mob-label">Expenses</span>
+        </button>
+        <button id="mobMoreBtn" class="mob-nav-item">
+          <span class="mob-icon">⋯</span>
+          <span class="mob-label">More</span>
+        </button>
+      </nav>
+    </div>
+  </div>
+
+  <!-- REUSABLE MODAL DIALOG -->
+  <div id="modalOverlay" class="modal-overlay" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-header">
+        <h2 id="modalTitle" class="modal-title">Modal Title</h2>
+        <button id="modalCloseBtn" class="icon-btn" aria-label="Close Dialog">✕</button>
+      </div>
+      <div id="modalBody" class="modal-body"></div>
+      <div id="modalFooter" class="modal-footer"></div>
+    </div>
+  </div>
+
+  <!-- HIDDEN PHOTO FILE INPUT (Used for Before / During / After & Receipt uploads) -->
+  <input id="photoFileInput" type="file" accept="image/*" multiple hidden>
+
+  <!-- SCRIPTS -->
   <script src="/static/api.js"></script>
   <script src="/static/app.js"></script>
 </body>
