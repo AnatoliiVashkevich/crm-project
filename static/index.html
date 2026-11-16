@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Field Service CRM</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <!-- ZONE 1: NAVIGATION TREE -->
+  <aside class="sidebar">
+    <div class="side-top">
+      <strong>Clients</strong>
+      <button class="btn green" data-add="client">+ Client</button>
+    </div>
+    <div class="filter">
+      <button class="chip active" data-filter="all">All Clients</button>
+      <button class="chip" data-filter="unpaid">🔴 Unpaid Only</button>
+    </div>
+    <div id="tree" class="tree"></div>
+    <div class="side-bottom">
+      <button class="link" data-view="profile">⚙️ My Profile</button>
+      <button class="link" data-view="report">📊 Income &amp; Expense Report</button>
+    </div>
+  </aside>
+
+  <!-- ZONE 2: WORKSPACE -->
+  <main class="work">
+    <div class="topbar"><span id="crumbs"></span><span id="saveState" class="save"></span></div>
+    <div id="workspace" class="workspace"></div>
+  </main>
+
+  <!-- ZONE 3: UNIFIED INPUT BAR (always here; wired up in a later step) -->
+  <footer class="input-bar">
+    <input id="uiText" type="text" placeholder="Type a command... (coming in a later step)" disabled>
+    <button class="icon" disabled title="Voice">🎤</button>
+    <button class="icon" disabled title="Photo">📷</button>
+    <button class="icon" disabled title="Send">➤</button>
+  </footer>
+
+  <script src="/static/api.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

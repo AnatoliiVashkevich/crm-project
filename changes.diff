@@ -1,0 +1,399 @@
+--- /mnt/project/main.py	1979-12-31 00:00:00.000000000 +0000
++++ main.py	2026-11-14 17:36:29.663342471 +0000
+@@ -2,10 +2,12 @@
+ import shutil
+ import json
+ import base64
++from collections import defaultdict
+ from datetime import datetime
++from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
+ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+ from fastapi.middleware.cors import CORSMiddleware
+-from pydantic import BaseModel
++from pydantic import BaseModel, Field
+ from openai import OpenAI
+ from supabase import create_client, Client
+ from dotenv import load_dotenv
+@@ -36,6 +38,12 @@
+ class ManualUpdateModel(BaseModel):
+     updates: dict
+ 
++class PaymentModel(BaseModel):
++    amount: float = Field(gt=0)
++    method: str | None = None
++    paid_at: str | None = None  # optional YYYY-MM-DD or ISO timestamp
++    note: str | None = None
++
+ class ChatInput(BaseModel):
+     text: str
+     client_id: str
+@@ -97,6 +105,102 @@
+ Always reply in the same language the user speaks to you (default to English for system init).
+ """
+ 
++# --- MONEY & BALANCE (single source of truth for paid / debt) ---
++CENT = Decimal("0.01")
++ZERO = Decimal("0.00")
++# Derived by the backend; never accepted from client input.
++PROTECTED_PROJECT_FIELDS = {"payment_status", "actual_amount"}
++
++def to_money(value) -> Decimal:
++    try:
++        return Decimal(str(value if value is not None else 0)).quantize(CENT, rounding=ROUND_HALF_UP)
++    except (InvalidOperation, ValueError):
++        return ZERO
++
++def fetch_all(table: str, columns: str = "*", page: int = 1000) -> list[dict]:
++    """Page through a table (PostgREST caps a single select at ~1000 rows)."""
++    rows: list[dict] = []
++    start = 0
++    while True:
++        chunk = supabase.table(table).select(columns).order("id").range(start, start + page - 1).execute().data or []
++        rows.extend(chunk)
++        if len(chunk) < page:
++            return rows
++        start += page
++
++def invoice_total(project: dict) -> Decimal:
++    inv = project.get("invoice_data")
++    items = inv.get("items") if isinstance(inv, dict) else None
++    if not isinstance(items, list):
++        return ZERO
++    total = Decimal(0)
++    for it in items:
++        if not isinstance(it, dict):
++            continue
++        try:
++            qty = Decimal(str(it.get("qty") or 1))
++            price = Decimal(str(it.get("price") or 0))
++        except InvalidOperation:
++            continue
++        total += qty * price
++    return total.quantize(CENT, rounding=ROUND_HALF_UP)
++
++def compute_balance(project: dict, payments: list[dict]) -> dict:
++    """Pure calculation. total_due = invoice total if an invoice exists, else the estimate."""
++    inv = invoice_total(project)
++    total_due = inv if inv > 0 else to_money(project.get("estimated_amount"))
++    total_paid = sum((to_money(p.get("amount")) for p in payments), ZERO)
++    is_debt = total_due > total_paid
++    return {
++        "total_due": total_due,
++        "total_paid": total_paid,
++        "balance_due": max(total_due - total_paid, ZERO),
++        "is_debt": is_debt,
++        "payment_status": "debt" if is_debt else "paid",
++    }
++
++def get_project_or_404(project_id: str) -> dict:
++    rows = supabase.table("projects").select("*").eq("id", project_id).execute().data
++    if not rows:
++        raise HTTPException(status_code=404, detail="Project not found")
++    return rows[0]
++
++def get_payments(project_id: str) -> list[dict]:
++    return supabase.table("payments").select("*").eq("project_id", project_id).order("paid_at", desc=True).execute().data or []
++
++def project_balance(project_id: str) -> dict:
++    """THE function for a project's money state: total_due, total_paid, balance_due, is_debt, payment_status."""
++    return compute_balance(get_project_or_404(project_id), get_payments(project_id))
++
++def attach_balance(project: dict, payments: list[dict] | None = None) -> dict:
++    """Return the project row plus derived balance fields (JSON-safe).
++    actual_amount is kept as a read-only alias of total_paid so the current UI keeps working."""
++    if payments is None:
++        payments = get_payments(project["id"])
++    bal = compute_balance(project, payments)
++    return {
++        **project,
++        "total_due": float(bal["total_due"]),
++        "total_paid": float(bal["total_paid"]),
++        "balance_due": float(bal["balance_due"]),
++        "is_debt": bal["is_debt"],
++        "payment_status": bal["payment_status"],
++        "actual_amount": float(bal["total_paid"]),
++    }
++
++def insert_payment(project_id: str, amount: Decimal, method: str | None, note: str | None, paid_at: str | None = None) -> dict:
++    row = {"project_id": project_id, "amount": str(to_money(amount)), "method": method, "note": note}
++    if paid_at:
++        row["paid_at"] = paid_at
++    return supabase.table("payments").insert(row).execute().data[0]
++
++def pay_remaining(project_id: str, method: str, note: str | None = None) -> dict | None:
++    """Insert one payment for whatever is still owed. Returns None if nothing is owed."""
++    remaining = project_balance(project_id)["balance_due"]
++    if remaining <= 0:
++        return None
++    return insert_payment(project_id, remaining, method, note)
++
+ # --- HELPER FUNCTIONS ---
+ def get_full_context(client_id: str, project_id: str):
+     c_res = supabase.table("clients").select("*").eq("id", client_id).execute()
+@@ -104,7 +208,7 @@
+     t_res = supabase.table("transactions").select("*").eq("project_id", project_id).order("created_at", desc=True).execute()
+     
+     client = c_res.data[0] if c_res.data else {}
+-    project = p_res.data[0] if p_res.data else {}
++    project = attach_balance(p_res.data[0]) if p_res.data else {}
+     transactions = t_res.data if t_res.data else []
+     return client, project, transactions
+ 
+@@ -125,28 +229,30 @@
+     if changes.project_address is not None: project_updates["address"] = changes.project_address
+     if changes.project_scope is not None: project_updates["scope_description"] = changes.project_scope
+     if changes.estimated_amount is not None: project_updates["estimated_amount"] = changes.estimated_amount
+-    if changes.actual_amount is not None: project_updates["actual_amount"] = changes.actual_amount
+-    if changes.payment_status is not None: project_updates["payment_status"] = changes.payment_status
++    # actual_amount / payment_status are derived from the payments table (see project_balance)
+     
+     if changes.new_work_plan_task:
+         current_plan = p_cur.get("work_plan") if isinstance(p_cur.get("work_plan"), list) else []
+         current_plan.append({"task": changes.new_work_plan_task, "details": "", "price": 0, "done": False})
+         project_updates["work_plan"] = current_plan
+ 
+-    if ("estimated_amount" in project_updates or "actual_amount" in project_updates) and "payment_status" not in project_updates:
+-        est = float(project_updates.get("estimated_amount", p_cur.get("estimated_amount") or 0))
+-        act = float(project_updates.get("actual_amount", p_cur.get("actual_amount") or 0))
+-        project_updates["payment_status"] = "debt" if (est > 0 and act < est) else "paid"
+-
+     if project_updates:
+         supabase.table("projects").update(project_updates).eq("id", project_id).execute()
+ 
++    # Bridge until the AI flow is reworked: the model still reports a running "actual paid" total.
++    # Record only the increase as a payment; never lower or overwrite anything.
++    if changes.actual_amount is not None:
++        increase = to_money(changes.actual_amount) - project_balance(project_id)["total_paid"]
++        if increase > 0:
++            insert_payment(project_id, increase, "AI Assistant", "Recorded via AI assistant")
++
+     if changes.transaction_amount is not None and changes.transaction_description is not None:
+         supabase.table("transactions").insert({
+             "client_id": client_id,
+             "project_id": project_id,
+             "amount": changes.transaction_amount,
+             "category": changes.transaction_category or "Other",
++            "kind": "income" if (changes.transaction_category or "").lower() == "income" else "expense",
+             "vendor": changes.transaction_vendor or "AI Assistant",
+             "description": changes.transaction_description,
+             "date_purchased": datetime.utcnow().strftime("%Y-%m-%d"),
+@@ -159,14 +265,13 @@
+     clients = supabase.table("clients").select("*").order("created_at", desc=False).execute().data
+     projects = supabase.table("projects").select("*").order("created_at", desc=True).execute().data
+     
++    payments_by_project = defaultdict(list)
++    for pay in fetch_all("payments", "id, project_id, amount"):
++        payments_by_project[pay["project_id"]].append(pay)
++
+     for c in clients:
+-        c_projects = [p for p in projects if p["client_id"] == c["id"]]
+-        has_debt = any(
+-            p.get("payment_status") == "debt" or 
+-            (float(p.get("estimated_amount") or 0) > float(p.get("actual_amount") or 0) and float(p.get("estimated_amount") or 0) > 0)
+-            for p in c_projects
+-        )
+-        c["has_debt"] = has_debt
++        c_projects = [attach_balance(p, payments_by_project[p["id"]]) for p in projects if p["client_id"] == c["id"]]
++        c["has_debt"] = any(p["is_debt"] for p in c_projects)
+         c["projects"] = c_projects
+         c["known_addresses"] = list({p["address"] for p in c_projects if p.get("address")})
+     return clients
+@@ -182,40 +287,64 @@
+ 
+ @app.post("/api/clients/{client_id}/mark-all-paid")
+ def mark_client_paid(client_id: str):
+-    supabase.table("projects").update({"payment_status": "paid"}).eq("client_id", client_id).execute()
+-    return {"status": "ok"}
++    projects = supabase.table("projects").select("id").eq("client_id", client_id).execute().data or []
++    created = 0
++    for p in projects:
++        if pay_remaining(p["id"], "Mark all paid", "Marked paid for all client projects"):
++            created += 1
++    return {"status": "ok", "payments_created": created}
+ 
+ @app.post("/api/projects")
+ def create_project(project: ProjectModel):
+     data = project.model_dump(exclude_none=True)
+-    data["payment_status"] = "paid"
+     try:
+         data["work_plan"] = []
+         data["estimate_items"] = []
+         data["invoice_data"] = {}
+-        return supabase.table("projects").insert(data).execute().data[0]
++        return attach_balance(supabase.table("projects").insert(data).execute().data[0], [])
+     except Exception:
+         # Fallback if SQL columns weren't added yet
+         data.pop("work_plan", None)
+         data.pop("estimate_items", None)
+         data.pop("invoice_data", None)
+-        return supabase.table("projects").insert(data).execute().data[0]
++        return attach_balance(supabase.table("projects").insert(data).execute().data[0], [])
+ 
+ @app.put("/api/projects/{project_id}")
+ def update_project_manual(project_id: str, payload: ManualUpdateModel):
+-    updates = payload.updates
++    # payment_status / actual_amount are derived from payments; silently ignore them if sent.
++    updates = {k: v for k, v in payload.updates.items() if k not in PROTECTED_PROJECT_FIELDS}
+     try:
+-        if "estimated_amount" in updates or "actual_amount" in updates:
+-            p_cur = supabase.table("projects").select("estimated_amount, actual_amount").eq("id", project_id).execute().data[0]
+-            est = float(updates.get("estimated_amount", p_cur.get("estimated_amount") or 0))
+-            act = float(updates.get("actual_amount", p_cur.get("actual_amount") or 0))
+-            if "payment_status" not in updates:
+-                updates["payment_status"] = "debt" if (est > 0 and act < est) else "paid"
+-                
+-        res = supabase.table("projects").update(updates).eq("id", project_id).execute()
+-        return res.data[0] if res.data else {"status": "ok"}
++        if updates:
++            supabase.table("projects").update(updates).eq("id", project_id).execute()
++        return attach_balance(get_project_or_404(project_id))
++    except HTTPException:
++        raise
+     except Exception as e:
+-        raise HTTPException(status_code=400, detail=f"Database error (make sure you ran the SQL script in Supabase): {str(e)}")
++        raise HTTPException(status_code=400, detail=f"Database error (make sure you ran schema.sql in Supabase): {str(e)}")
++
++# --- PAYMENTS ---
++@app.get("/api/projects/{project_id}/payments")
++def list_payments(project_id: str):
++    return {"payments": get_payments(project_id), "balance": attach_balance(get_project_or_404(project_id))}
++
++@app.post("/api/projects/{project_id}/payments")
++def add_payment(project_id: str, payment: PaymentModel):
++    get_project_or_404(project_id)
++    row = insert_payment(project_id, to_money(payment.amount), payment.method, payment.note, payment.paid_at)
++    return {"payment": row, "project": attach_balance(get_project_or_404(project_id))}
++
++@app.post("/api/projects/{project_id}/mark-paid")
++def mark_project_paid(project_id: str):
++    pay_remaining(project_id, "Mark paid")
++    return {"project": attach_balance(get_project_or_404(project_id))}
++
++@app.delete("/api/payments/{payment_id}")
++def delete_payment(payment_id: str):
++    rows = supabase.table("payments").select("project_id").eq("id", payment_id).execute().data
++    if not rows:
++        raise HTTPException(status_code=404, detail="Payment not found")
++    supabase.table("payments").delete().eq("id", payment_id).execute()
++    return {"status": "deleted", "project": attach_balance(get_project_or_404(rows[0]["project_id"]))}
+ 
+ # --- RECEIPT OCR SCANNER ---
+ @app.post("/api/projects/{project_id}/scan-receipt")
+@@ -289,7 +418,7 @@
+ CLIENT: Name={client.get('name')}, Phone={client.get('phone') or 'MISSING'}, Note={client.get('comment') or 'MISSING'}
+ PROJECT: Name={project.get('name')}, Address={project.get('address') or 'MISSING'}, Scope={project.get('scope_description') or 'MISSING'}
+ WORK PLAN: {json.dumps(project.get('work_plan') or [], ensure_ascii=False)}
+-FINANCES: Estimate=${project.get('estimated_amount', 0)}, Actual Paid=${project.get('actual_amount', 0)}, Status={project.get('payment_status', 'paid')}
++FINANCES: Estimate=${project.get('estimated_amount', 0)}, Total due=${project.get('total_due', 0)}, Paid so far=${project.get('total_paid', 0)}, Balance due=${project.get('balance_due', 0)}, Status={project.get('payment_status', 'paid')}
+ EXPENSES/RECEIPTS ({len(transactions)}): {json.dumps([{'vendor': t.get('vendor'), 'amount': t.get('amount'), 'cat': t.get('category')} for t in transactions], ensure_ascii=False)}
+ ================================
+ """
+--- /mnt/project/index.html	1979-12-31 00:00:00.000000000 +0000
++++ index.html	2026-11-14 17:36:41.659004171 +0000
+@@ -164,8 +164,8 @@
+                     <div class="val" id="uiEstimated" onclick="editProjectField('estimated_amount', 'Estimate Total ($)', true)">$0.00</div>
+                 </div>
+                 <div class="fin-box">
+-                    <label>Actual Paid</label>
+-                    <div class="val" id="uiActual" onclick="editProjectField('actual_amount', 'Actual Paid Amount ($)', true)">$0.00</div>
++                    <label>Paid (click to add)</label>
++                    <div class="val" id="uiActual" onclick="addPaymentPrompt()">$0.00</div>
+                 </div>
+                 <div class="fin-box">
+                     <label>Expenses (Receipts)</label>
+@@ -493,10 +493,37 @@
+         document.getElementById('invMyPayment').innerText = p.payment;
+     }
+ 
++    // Debt is calculated by the backend (invoice/estimate total vs. payments).
+     function isProjectDebt(p) {
+-        const est = Number(p.estimated_amount || 0);
+-        const act = Number(p.actual_amount || 0);
+-        return p.payment_status === 'debt' || (est > 0 && act < est);
++        return p.is_debt === true;
++    }
++
++    async function postJSON(url, body) {
++        const res = await fetch(`${API_BASE}${url}`, {
++            method: "POST", headers: {"Content-Type": "application/json"},
++            body: body ? JSON.stringify(body) : undefined
++        });
++        const data = await res.json().catch(() => ({}));
++        if (!res.ok) { alert(data.detail || "Request failed."); return null; }
++        return data;
++    }
++
++    // Copy only the backend-derived money fields so unsaved local edits are not overwritten.
++    function applyBalance(p) {
++        ['total_due', 'total_paid', 'balance_due', 'is_debt', 'payment_status', 'actual_amount']
++            .forEach(k => { currentProject[k] = p[k]; });
++    }
++
++    async function addPaymentPrompt() {
++        const val = prompt("Payment received ($):", "");
++        if (val === null || val.trim() === "") return;
++        const amount = Number(val);
++        if (!(amount > 0)) return alert("Enter an amount greater than 0.");
++        const data = await postJSON(`/projects/${currentProject.id}/payments`, { amount, method: "manual" });
++        if (!data) return;
++        applyBalance(data.project);
++        await loadClientsTree();
++        renderWorkspaceUI();
+     }
+ 
+     // --- 1. CLIENTS & PROJECTS TREE ---
+@@ -965,17 +992,13 @@
+ 
+     async function markInvoicePaid() {
+         updateInvoiceMeta();
+-        const items = currentProject.invoice_data.items || [];
+-        const total = items.reduce((acc, r) => acc + (Number(r.qty || 1) * Number(r.price || 0)), 0);
+-        const finalAmount = total > 0 ? total : Number(currentProject.estimated_amount || 0);
+-
+-        await saveProjectUpdates({
+-            invoice_data: currentProject.invoice_data,
+-            estimated_amount: finalAmount,
+-            actual_amount: finalAmount,
+-            payment_status: 'paid'
+-        });
+-        alert(`Invoice marked as PAID ($${finalAmount.toFixed(2)})! Status is now 🟢 PAID.`);
++        await saveProjectUpdates({ invoice_data: currentProject.invoice_data });
++        const data = await postJSON(`/projects/${currentProject.id}/mark-paid`);
++        if (!data) return;
++        applyBalance(data.project);
++        await loadClientsTree();
++        renderWorkspaceUI();
++        alert("Invoice marked as PAID. Status is now 🟢 PAID.");
+     }
+ 
+     // --- 7. TAB 4: EXPENSES & RECEIPTS (AI SCANNER) ---
+@@ -1079,19 +1102,20 @@
+     }
+ 
+     async function togglePaymentStatus() {
+-        const nextStatus = isProjectDebt(currentProject) ? 'paid' : 'debt';
+-        const updates = { payment_status: nextStatus };
+-        if (nextStatus === 'paid' && Number(currentProject.actual_amount || 0) < Number(currentProject.estimated_amount || 0)) {
+-            updates.actual_amount = currentProject.estimated_amount;
++        if (!isProjectDebt(currentProject)) {
++            return alert("Status is calculated automatically from payments vs. the invoice/estimate total.");
+         }
+-        await saveProjectUpdates(updates);
++        const data = await postJSON(`/projects/${currentProject.id}/mark-paid`);
++        if (!data) return;
++        applyBalance(data.project);
++        await loadClientsTree();
++        renderWorkspaceUI();
+     }
+ 
+     async function markAllClientProjectsPaid() {
+-        await fetch(`${API_BASE}/clients/${currentClient.id}/mark-all-paid`, { method: "POST" });
+-        currentProject.payment_status = 'paid';
+-        await loadClientsTree();
+-        renderWorkspaceUI();
++        const data = await postJSON(`/clients/${currentClient.id}/mark-all-paid`);
++        if (!data) return;
++        await openProjectWorkspace(currentClient.id, currentProject.id);
+     }
+ 
+     // --- 9. AI ASSISTANT CHAT (VOICE + JSON VIEW) ---

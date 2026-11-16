@@ -1,437 +1,23 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Field Service CRM & Invoicing</title>
-    <style>
-        * { box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; display: flex; height: 100vh; background: #f3f4f6; color: #111827; overflow: hidden; }
-        
-        /* === LEFT SIDEBAR: CLIENTS & PROJECTS TREE === */
-        .sidebar { width: 320px; background: white; border-right: 1px solid #e5e7eb; display: flex; flex-direction: column; flex-shrink: 0; }
-        .sidebar-header { padding: 12px 14px; background: #111827; color: white; font-weight: 700; font-size: 14px; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
-        .clients-tree { flex: 1; overflow-y: auto; padding: 8px; }
-        
-        .client-block { border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 8px; background: #fff; }
-        .client-row { position: sticky; top: 0; z-index: 5; background: #f9fafb; padding: 10px 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-weight: 600; border-radius: 8px; transition: 0.15s; }
-        .client-row:hover { background: #f3f4f6; }
-        .client-block.expanded .client-row { background: #eff6ff; border-bottom: 1px solid #dbeafe; border-radius: 8px 8px 0 0; color: #1e40af; }
-        
-        .projects-sublist { display: none; max-height: 210px; overflow-y: auto; background: white; padding: 6px; border-radius: 0 0 8px 8px; }
-        .client-block.expanded .projects-sublist { display: block; }
-        
-        .project-item { padding: 8px 10px; margin-bottom: 4px; border-radius: 6px; font-size: 13px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; color: #374151; border: 1px solid transparent; }
-        .project-item:hover { background: #f9fafb; border-color: #e5e7eb; }
-        .project-item.active { background: #dbeafe; color: #1e3a8a; font-weight: 600; border-color: #93c5fd; }
-        
-        .add-proj-inline { width: 100%; padding: 6px; margin-bottom: 6px; background: #f0fdf4; color: #15803d; border: 1px dashed #86efac; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; }
-        .add-proj-inline:hover { background: #dcfce7; }
+// app.js - Application Initialization & Event Listeners
+document.addEventListener('DOMContentLoaded', async () => {
+    console.log("CRM Initialized");
+    
+    // Example: Bind tab switching logic
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            document.querySelectorAll('.tab-btn, .tab-content').forEach(el => el.classList.remove('active'));
+            e.target.classList.add('active');
+            const targetTab = document.getElementById(e.target.dataset.target);
+            if (targetTab) targetTab.classList.add('active');
+        });
+    });
 
-        .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
-        .dot-green { background: #10b981; box-shadow: 0 0 5px rgba(16,185,129,0.4); }
-        .dot-red { background: #ef4444; box-shadow: 0 0 5px rgba(239,68,68,0.4); }
+    // Load initial data from Supabase via FastAPI
+    // const clients = await API.getClients();
+    // renderClientsTree(clients);
+});
 
-        /* === RIGHT AREA: PROJECT WORKSPACE + AI DOCK === */
-        .main-col { flex: 1; display: flex; flex-direction: column; height: 100vh; position: relative; overflow: hidden; }
-        .overlay-lock { position: absolute; inset: 0; background: rgba(243,244,246,0.92); display: flex; justify-content: center; align-items: center; font-size: 16px; font-weight: 500; color: #4b5563; z-index: 30; }
 
-        .project-Workspace { flex: 1; overflow-y: auto; padding: 14px 20px; display: flex; flex-direction: column; gap: 12px; }
-        
-        .top-summary-bar { background: white; padding: 12px 16px; border-radius: 10px; border: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
-        .proj-title-block h2 { margin: 0 0 6px 0; font-size: 17px; display: flex; align-items: center; gap: 8px; }
-        .proj-meta { font-size: 13px; color: #4b5563; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
-        .editable-link { cursor: pointer; border-bottom: 1px dashed #9ca3af; color: #111827; font-weight: 500; }
-        .editable-link:hover { color: #2563eb; border-bottom-color: #2563eb; }
-        .missing-val { color: #ef4444; font-style: italic; }
-
-        .finance-pills { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-        .fin-box { background: #f9fafb; padding: 6px 12px; border-radius: 8px; border: 1px solid #e5e7eb; text-align: right; min-width: 115px; }
-        .fin-box label { display: block; font-size: 10px; color: #6b7280; text-transform: uppercase; }
-        .fin-box .val { font-size: 15px; font-weight: 700; color: #111827; cursor: pointer; }
-        
-        .badge { padding: 5px 10px; border-radius: 14px; font-size: 11px; font-weight: 700; color: white; cursor: pointer; }
-        .badge-green { background: #10b981; }
-        .badge-red { background: #ef4444; }
-
-        /* Tabs Navigation */
-        .tabs-nav { display: flex; gap: 6px; border-bottom: 2px solid #e5e7eb; flex-wrap: wrap; }
-        .tab-btn { padding: 9px 15px; background: transparent; border: none; font-size: 13px; font-weight: 600; color: #6b7280; cursor: pointer; border-bottom: 3px solid transparent; margin-bottom: -2px; }
-        .tab-btn.active { color: #2563eb; border-bottom-color: #2563eb; background: white; border-radius: 6px 6px 0 0; }
-
-        .tab-content { display: none; background: white; padding: 16px; border-radius: 0 8px 8px 8px; border: 1px solid #e5e7eb; }
-        .tab-content.active { display: block; }
-
-        table.data-table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
-        table.data-table th { background: #f9fafb; text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e7eb; color: #4b5563; }
-        table.data-table td { padding: 8px 10px; border-bottom: 1px solid #f3f4f6; vertical-align: middle; }
-        table.data-table input { width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 13px; }
-        
-        .btn { padding: 7px 12px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px; transition: 0.15s; display: inline-flex; align-items: center; gap: 4px; }
-        .btn-blue { background: #2563eb; color: white; }
-        .btn-blue:hover { background: #1d4ed8; }
-        .btn-green { background: #10b981; color: white; }
-        .btn-green:hover { background: #059669; }
-        .btn-purple { background: #7c3aed; color: white; }
-        .btn-purple:hover { background: #6d28d9; }
-        .btn-gray { background: #e5e7eb; color: #374151; }
-        .btn-gray:hover { background: #d1d5db; }
-        .btn-red { background: #fee2e2; color: #b91c1c; padding: 4px 8px; font-size: 11px; }
-
-        .doc-header-box { display: flex; justify-content: space-between; background: #f8fafc; padding: 14px 16px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 12px; font-size: 13px; line-height: 1.5; flex-wrap: wrap; gap: 12px; }
-        
-        .cat-tag { padding: 3px 8px; border-radius: 12px; font-size: 11px; font-weight: 700; display: inline-block; }
-        .cat-Construction { background: #fef3c7; color: #b45309; }
-        .cat-Groceries { background: #dcfce7; color: #15803d; }
-        .cat-Fuel { background: #dbeafe; color: #1d4ed8; }
-        .cat-Other { background: #f3f4f6; color: #374151; }
-
-        /* === BOTTOM DOCK: AI ASSISTANT CHAT === */
-        .ai-dock { height: 215px; background: white; border-top: 2px solid #cbd5e1; display: flex; flex-direction: column; flex-shrink: 0; transition: height 0.2s; }
-        .ai-dock.minimized { height: 38px; }
-        .ai-dock-header { padding: 7px 16px; background: #1f2937; color: white; font-size: 13px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
-        .messages { flex: 1; padding: 10px 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; background: #f9fafb; }
-        
-        .msg-wrapper { max-width: 82%; display: flex; flex-direction: column; gap: 3px; }
-        .user-wrapper { align-self: flex-end; align-items: flex-end; }
-        .ai-wrapper { align-self: flex-start; align-items: flex-start; }
-        .msg { padding: 8px 12px; border-radius: 12px; font-size: 13px; line-height: 1.4; white-space: pre-wrap; }
-        .user-msg { background: #2563eb; color: white; border-bottom-right-radius: 3px; }
-        .ai-msg { background: white; border: 1px solid #e5e7eb; color: #111827; border-bottom-left-radius: 3px; }
-
-        .debug-btn { background: #e5e7eb; border: none; padding: 2px 7px; border-radius: 4px; font-size: 10px; cursor: pointer; color: #374151; }
-        .debug-pre { display: none; background: #111827; color: #10b981; padding: 8px; border-radius: 6px; font-family: monospace; font-size: 10px; overflow-x: auto; max-width: 100%; margin: 0; }
-
-        .input-area { display: flex; padding: 8px 14px; gap: 8px; background: white; border-top: 1px solid #e5e7eb; align-items: center; }
-        .input-area input { flex: 1; padding: 8px 14px; border: 1px solid #d1d5db; border-radius: 20px; font-size: 13px; outline: none; }
-        #micBtn.recording { background: #9ca3af !important; animation: pulse 1s infinite; }
-        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.08); } 100% { transform: scale(1); } }
-
-        /* Modals */
-        .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; z-index: 100; }
-        .modal-content { background: white; padding: 20px; border-radius: 10px; width: 360px; display: flex; flex-direction: column; gap: 10px; max-height: 90vh; overflow-y: auto; }
-        .modal-content label { font-size: 12px; font-weight: 600; color: #374151; margin-bottom: -6px; }
-        .modal-content input, .modal-content textarea { padding: 9px; border: 1px solid #d1d5db; border-radius: 6px; width: 100%; font-size: 13px; }
-
-        /* Print Styles for clean Estimate / Invoice PDF export */
-        @media print {
-            .sidebar, .top-summary-bar, .tabs-nav, .ai-dock, .no-print { display: none !important; }
-            body, .main-col, .project-Workspace { height: auto !important; overflow: visible !important; background: white !important; padding: 0 !important; }
-            .tab-content.active { border: none !important; padding: 0 !important; }
-            table.data-table input { border: none !important; padding: 0 !important; }
-        }
-    </style>
-</head>
-<body>
-
-<!-- LEFT SIDEBAR: CLIENTS & PROJECTS -->
-<div class="sidebar">
-    <div class="sidebar-header">
-        <span>📂 Clients & Projects</span>
-        <div style="display:flex; gap:4px;">
-            <button class="btn btn-gray" style="padding:5px 8px; font-size:11px;" onclick="openProfileModal()" title="Edit My Business Info">⚙️ My Info</button>
-            <button class="btn btn-green" style="padding:5px 8px; font-size:11px;" onclick="openClientModal()">+ Client</button>
-        </div>
-    </div>
-    <div class="clients-tree" id="clientsTree"></div>
-</div>
-
-<!-- RIGHT COLUMN: PROJECT WORKSPACE + AI DOCK -->
-<div class="main-col">
-    <div class="overlay-lock" id="workspaceLock">👈 Select a Client on the left and open a Project to start working</div>
-
-    <div class="project-Workspace" id="projectWorkspace">
-        <!-- Top Project & Financial Summary Bar -->
-        <div class="top-summary-bar">
-            <div class="proj-title-block">
-                <h2>
-                    <span id="uiClientName" style="color:#4b5563; font-weight:500;"></span>
-                    <span id="uiClientDebtBadge" class="badge" style="font-size:10px; padding:3px 7px;"></span>
-                    <span style="color:#9ca3af;">/</span>
-                    <span id="uiProjectName" class="editable-link" onclick="editProjectField('name', 'Project Name')"></span>
-                </h2>
-                <div class="proj-meta">
-                    <span>📍 Address: <span id="uiProjectAddress" class="editable-link" onclick="editProjectField('address', 'Project Address')"></span></span>
-                    <span>📞 Phone: <span id="uiClientPhone" class="editable-link" onclick="editClientField('phone', 'Client Phone')"></span></span>
-                    <span>💬 Note: <span id="uiClientComment" class="editable-link" onclick="editClientField('comment', 'Client Note')"></span></span>
-                    <button class="btn btn-gray" style="padding:3px 7px; font-size:11px;" onclick="markAllClientProjectsPaid()">Mark All Client Projects Paid (🟢)</button>
-                </div>
-            </div>
-
-            <div class="finance-pills">
-                <div class="fin-box">
-                    <label>Estimate Total</label>
-                    <div class="val" id="uiEstimated" onclick="editProjectField('estimated_amount', 'Estimate Total ($)', true)">$0.00</div>
-                </div>
-                <div class="fin-box">
-                    <label>Actual Paid</label>
-                    <div class="val" id="uiActual" onclick="editProjectField('actual_amount', 'Actual Paid Amount ($)', true)">$0.00</div>
-                </div>
-                <div class="fin-box">
-                    <label>Expenses (Receipts)</label>
-                    <div class="val" id="uiExpensesTotal" style="color:#b45309; cursor:default;">$0.00</div>
-                </div>
-                <span id="uiStatusBadge" class="badge badge-green" onclick="togglePaymentStatus()" title="Click to toggle project payment status">🟢 PAID</span>
-            </div>
-        </div>
-
-        <!-- Lifecycle Tabs: Work Plan -> Estimate -> Invoice -> Expenses -->
-        <div class="tabs-nav">
-            <button class="tab-btn active" id="tabBtn-plan" onclick="switchTab('plan')">1. 📋 Work Plan (Today's Tasks)</button>
-            <button class="tab-btn" id="tabBtn-estimate" onclick="switchTab('estimate')">2. 📄 Estimate</button>
-            <button class="tab-btn" id="tabBtn-invoice" onclick="switchTab('invoice')">3. 💵 Invoice</button>
-            <button class="tab-btn" id="tabBtn-expenses" onclick="switchTab('expenses')">4. 🧾 Expenses & Receipts</button>
-        </div>
-
-        <!-- TAB 1: WORK PLAN (TODAY'S TASKS) -->
-        <div class="tab-content active" id="tab-plan">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:10px;">
-                <div style="font-size:13px; color:#4b5563;">
-                    General Project Scope: <span id="uiProjectScope" class="editable-link" onclick="editProjectField('scope_description', 'General Project Scope')"></span>
-                </div>
-                <div style="display:flex; gap:8px;">
-                    <button class="btn btn-blue" onclick="openTaskModal()">+ Add Task (Form)</button>
-                    <button class="btn btn-purple" onclick="pullFromWorkPlan(true)">➡️ Create Estimate from Plan</button>
-                </div>
-            </div>
-
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th style="width:45px;">Done</th>
-                        <th>Task / Work Description</th>
-                        <th>Details / Notes</th>
-                        <th style="width:110px;">Est. Price ($)</th>
-                        <th style="width:110px;">Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="workPlanBody"></tbody>
-            </table>
-        </div>
-
-        <!-- TAB 2: ESTIMATE -->
-        <div class="tab-content" id="tab-estimate">
-            <div class="doc-header-box">
-                <div>
-                    <strong id="estMyRole">Service Provider:</strong><br>
-                    <span id="estMyCompany" style="font-weight:700; font-size:14px;"></span><br>
-                    <span id="estMyContact"></span><br>
-                    <a href="#" class="no-print" style="font-size:11px; color:#2563eb;" onclick="openProfileModal(); return false;">✏️ Edit My Business Info</a>
-                </div>
-                <div style="text-align:right;">
-                    <strong>Estimate For (Client):</strong><br>
-                    <span id="estClientName" style="font-weight:700; font-size:14px;"></span><br>
-                    Address: <span id="estProjectAddress"></span><br>
-                    Phone: <span id="estClientPhone"></span>
-                </div>
-            </div>
-
-            <div class="no-print" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
-                <div style="display:flex; gap:8px;">
-                    <button class="btn btn-blue" onclick="pullFromWorkPlan(false)">🔄 Import Tasks from Work Plan</button>
-                    <button class="btn btn-gray" onclick="addEstimateRow()">+ Add Line Item</button>
-                </div>
-                <div style="display:flex; gap:8px;">
-                    <button class="btn btn-green" onclick="saveEstimateToDB()">💾 Save Estimate</button>
-                    <button class="btn btn-purple" onclick="convertEstimateToInvoice()">➡️ Convert to Invoice</button>
-                    <button class="btn btn-gray" onclick="window.print()">🖨️ Print / PDF</button>
-                </div>
-            </div>
-
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>Work / Service Description</th>
-                        <th style="width:90px;">Qty</th>
-                        <th style="width:120px;">Unit Price ($)</th>
-                        <th style="width:120px;">Line Total ($)</th>
-                        <th class="no-print" style="width:55px;"></th>
-                    </tr>
-                </thead>
-                <tbody id="estimateBody"></tbody>
-                <tfoot>
-                    <tr>
-                        <td colspan="3" style="text-align:right; font-weight:700; font-size:14px;">ESTIMATE TOTAL:</td>
-                        <td colspan="2" style="font-weight:700; font-size:16px; color:#15803d;" id="estimateGrandTotal">$0.00</td>
-                    </tr>
-                </tfoot>
-            </table>
-        </div>
-
-        <!-- TAB 3: INVOICE -->
-        <div class="tab-content" id="tab-invoice">
-            <div class="doc-header-box">
-                <div>
-                    <div style="font-size:18px; font-weight:800; color:#111827; margin-bottom:4px;">INVOICE</div>
-                    <strong id="invMyRole">From:</strong><br>
-                    <span id="invMyCompany" style="font-weight:700;"></span><br>
-                    <span id="invMyContact"></span><br>
-                    <span id="invMyPayment" style="color:#1e40af; font-weight:600;"></span>
-                </div>
-                <div style="text-align:right;">
-                    <div style="margin-bottom:6px;">
-                        <strong>Invoice #:</strong> <input type="text" id="invNumber" style="width:110px; padding:3px 6px;" onchange="updateInvoiceMeta()">
-                        <strong>Date:</strong> <input type="date" id="invDate" style="width:130px; padding:3px 6px;" onchange="updateInvoiceMeta()">
-                    </div>
-                    <strong>Bill To:</strong><br>
-                    <span id="invClientName" style="font-weight:700;"></span><br>
-                    Address: <span id="invProjectAddress"></span> | Phone: <span id="invClientPhone"></span>
-                </div>
-            </div>
-
-            <div class="no-print" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
-                <div style="display:flex; gap:8px;">
-                    <button class="btn btn-blue" onclick="pullFromEstimateToInvoice()">🔄 Pull Items from Estimate</button>
-                    <button class="btn btn-gray" onclick="addInvoiceRow()">+ Add Line Item</button>
-                </div>
-                <div style="display:flex; gap:8px;">
-                    <button class="btn btn-green" onclick="saveInvoiceToDB()">💾 Save Invoice</button>
-                    <button class="btn btn-purple" onclick="markInvoicePaid()">✅ Mark Invoice as Paid</button>
-                    <button class="btn btn-gray" onclick="window.print()">🖨️ Print / Save PDF</button>
-                </div>
-            </div>
-
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>Description</th>
-                        <th style="width:90px;">Qty</th>
-                        <th style="width:120px;">Unit Price ($)</th>
-                        <th style="width:120px;">Total ($)</th>
-                        <th class="no-print" style="width:55px;"></th>
-                    </tr>
-                </thead>
-                <tbody id="invoiceBody"></tbody>
-                <tfoot>
-                    <tr>
-                        <td colspan="3" style="text-align:right; font-weight:700; font-size:14px;">INVOICE TOTAL DUE:</td>
-                        <td colspan="2" style="font-weight:800; font-size:16px; color:#1e40af;" id="invoiceGrandTotal">$0.00</td>
-                    </tr>
-                </tfoot>
-            </table>
-            <div style="margin-top:12px;">
-                <label style="font-size:12px; color:#4b5563; font-weight:600;">Invoice Notes / Payment Terms:</label>
-                <input type="text" id="invNotes" placeholder="Thank you for your business! Payment due upon receipt." style="width:100%; padding:8px; border:1px solid #d1d5db; border-radius:6px; margin-top:4px;" onchange="updateInvoiceMeta()">
-            </div>
-        </div>
-
-        <!-- TAB 4: EXPENSES & RECEIPTS (AI SCANNER) -->
-        <div class="tab-content" id="tab-expenses">
-            <div style="display:flex; justify-content:space-between; align-items:center; background:#eff6ff; padding:12px 16px; border-radius:8px; border:1px solid #bfdbfe; margin-bottom:12px; flex-wrap:wrap; gap:10px;">
-                <div>
-                    <strong>📸 AI Receipt Scanner (OCR)</strong>
-                    <div style="font-size:12px; color:#4b5563;">Upload or take a photo of a receipt — AI extracts the date, store name, line items, total, and assigns a category (Construction / Groceries / Fuel).</div>
-                </div>
-                <div>
-                    <input type="file" id="receiptFileInput" accept="image/*" capture="environment" style="display:none;" onchange="uploadAndScanReceipt(this)">
-                    <button class="btn btn-blue" id="scanBtn" onclick="document.getElementById('receiptFileInput').click()">📷 Scan / Upload Receipt</button>
-                </div>
-            </div>
-
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th style="width:105px;">Date</th>
-                        <th>Store / Vendor</th>
-                        <th style="width:120px;">Category</th>
-                        <th>Purchased Items</th>
-                        <th style="width:95px;">Total ($)</th>
-                        <th style="width:55px;"></th>
-                    </tr>
-                </thead>
-                <tbody id="expensesBody"></tbody>
-            </table>
-        </div>
-    </div>
-
-    <!-- BOTTOM DOCK: AI ASSISTANT -->
-    <div class="ai-dock" id="aiDock">
-        <div class="ai-dock-header">
-            <span style="cursor:pointer;" onclick="document.getElementById('aiDock').classList.toggle('minimized')">🤖 AI Assistant (Project Context Aware) [Minimize / Expand ↕]</span>
-            <button class="btn" style="background:#374151; color:#93c5fd; padding:3px 8px; font-size:11px;" onclick="recheckWithAI()">🔄 Check Missing Fields (AI)</button>
-        </div>
-        <div class="messages" id="messages"></div>
-        <div class="input-area">
-            <input type="text" id="textInput" placeholder="Type or speak a command (add task, update phone/address, log expense or payment)...">
-            <button class="btn btn-blue" id="sendBtn">➤</button>
-            <button class="btn" id="micBtn" style="background:#ef4444; color:white;">🎤</button>
-        </div>
-    </div>
-</div>
-
-<!-- MODAL 1: MY BUSINESS PROFILE (EDITABLE USER INFO) -->
-<div class="modal" id="profileModal">
-    <div class="modal-content">
-        <h3 style="margin:0;">⚙️ My Business Profile</h3>
-        <label>Your Role / Header Title</label>
-        <input type="text" id="profRole" placeholder="e.g. Service Provider, Handyman Services, Owner">
-        <label>Company / Full Name</label>
-        <input type="text" id="profCompany" placeholder="e.g. Anatolii Vashkevich LLC">
-        <label>City / Address</label>
-        <input type="text" id="profAddress" placeholder="e.g. Boca Raton, FL">
-        <label>Phone & Email</label>
-        <input type="text" id="profContact" placeholder="e.g. (561) 000-0000 | handyman33432@gmail.com">
-        <label>Payment Instructions (shown on Invoice)</label>
-        <input type="text" id="profPayment" placeholder="e.g. Zelle: Anatolii Vashkevich LLC">
-        <div style="display:flex; gap:8px; margin-top:6px;">
-            <button class="btn btn-green" style="flex:1;" onclick="saveBusinessProfile()">Save Profile</button>
-            <button class="btn btn-gray" onclick="document.getElementById('profileModal').style.display='none'">Cancel</button>
-        </div>
-    </div>
-</div>
-
-<!-- MODAL 2: TASK FORM (ADD / EDIT TASK IN WORK PLAN) -->
-<div class="modal" id="taskModal">
-    <div class="modal-content">
-        <h3 style="margin:0;" id="taskModalTitle">📋 Add Task to Work Plan</h3>
-        <input type="hidden" id="taskEditIndex" value="-1">
-        <label>Task Name / Work Description *</label>
-        <input type="text" id="taskTitleInput" placeholder="e.g. Install interior prehung door">
-        <label>Details / Materials / Notes</label>
-        <textarea id="taskDetailsInput" rows="3" placeholder="e.g. Master bedroom, includes trim and lockset"></textarea>
-        <label>Estimated Price ($) (Optional)</label>
-        <input type="number" step="0.01" id="taskPriceInput" placeholder="0.00">
-        <div style="display:flex; gap:8px; margin-top:6px;">
-            <button class="btn btn-green" style="flex:1;" onclick="saveTaskFromModal()">Save Task</button>
-            <button class="btn btn-gray" onclick="document.getElementById('taskModal').style.display='none'">Cancel</button>
-        </div>
-    </div>
-</div>
-
-<!-- MODAL 3: NEW CLIENT -->
-<div class="modal" id="clientModal">
-    <div class="modal-content">
-        <h3 style="margin:0;">New Client</h3>
-        <label>Client Name *</label>
-        <input type="text" id="cName" placeholder="Full Name">
-        <label>Phone Number</label>
-        <input type="text" id="cPhone" placeholder="Optional">
-        <label>Notes / Comments</label>
-        <textarea id="cComment" placeholder="Optional"></textarea>
-        <div style="display:flex; gap:8px; margin-top:6px;">
-            <button class="btn btn-green" style="flex:1;" onclick="saveNewClient()">Next → Create Project</button>
-            <button class="btn btn-gray" onclick="document.getElementById('clientModal').style.display='none'">Cancel</button>
-        </div>
-    </div>
-</div>
-
-<!-- MODAL 4: NEW PROJECT -->
-<div class="modal" id="projectModal">
-    <div class="modal-content">
-        <h3 style="margin:0;">New Project</h3>
-        <label>Project Name *</label>
-        <input type="text" id="pName" placeholder="Visit 1, Kitchen Repair, etc.">
-        <label>Property Address</label>
-        <input type="text" id="pAddress" list="addressHistory" placeholder="Select past address or type new">
-        <datalist id="addressHistory"></datalist>
-        <div style="display:flex; gap:8px; margin-top:6px;">
-            <button class="btn btn-green" style="flex:1;" onclick="saveNewProject()">Open Project</button>
-            <button class="btn btn-gray" onclick="document.getElementById('projectModal').style.display='none'">Cancel</button>
-        </div>
-    </div>
-</div>
-
-<script>
     const API_BASE = "http://127.0.0.1:8000/api";
     let allClients = [];
     let expandedClientIds = new Set();
@@ -493,10 +79,50 @@
         document.getElementById('invMyPayment').innerText = p.payment;
     }
 
+    // Debt is calculated by the backend (invoice/estimate total vs. payments).
     function isProjectDebt(p) {
-        const est = Number(p.estimated_amount || 0);
-        const act = Number(p.actual_amount || 0);
-        return p.payment_status === 'debt' || (est > 0 && act < est);
+        return p.is_debt === true;
+    }
+
+    async function postJSON(url, body) {
+        const res = await fetch(`${API_BASE}${url}`, {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: body ? JSON.stringify(body) : undefined
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { alert(data.detail || "Request failed."); return null; }
+        return data;
+    }
+
+    // Copy only the backend-derived money fields so unsaved local edits are not overwritten.
+    function applyBalance(p) {
+        ['total_due', 'total_paid', 'balance_due', 'is_debt', 'payment_status', 'actual_amount']
+            .forEach(k => { currentProject[k] = p[k]; });
+    }
+
+    // Invoice numbers are assigned by the server (sequential, never random).
+    async function ensureInvoiceNumber() {
+        if (!currentProject.invoice_number) {
+            const data = await postJSON(`/projects/${currentProject.id}/invoice-number`);
+            if (data) currentProject.invoice_number = data.invoice_number;
+        }
+        if (!currentProject.invoice_data || typeof currentProject.invoice_data !== 'object') {
+            currentProject.invoice_data = { items: [] };
+        }
+        if (currentProject.invoice_number) currentProject.invoice_data.invoice_number = currentProject.invoice_number;
+        return currentProject.invoice_number;
+    }
+
+    async function addPaymentPrompt() {
+        const val = prompt("Payment received ($):", "");
+        if (val === null || val.trim() === "") return;
+        const amount = Number(val);
+        if (!(amount > 0)) return alert("Enter an amount greater than 0.");
+        const data = await postJSON(`/projects/${currentProject.id}/payments`, { amount, method: "manual" });
+        if (!data) return;
+        applyBalance(data.project);
+        await loadClientsTree();
+        renderWorkspaceUI();
     }
 
     // --- 1. CLIENTS & PROJECTS TREE ---
@@ -655,6 +281,17 @@
             }
             addChatBubble(m.content, m.role === 'user' ? 'user' : 'ai', parsedJson);
         });
+
+        // The workspace loads without the AI; request the first summary afterwards.
+        if (data.needs_greeting) {
+            try {
+                const gRes = await fetch(`${API_BASE}/project-greeting/${clientId}/${projectId}`, { method: "POST" });
+                const g = await gRes.json();
+                if (gRes.ok && g.reply_message && currentProject && currentProject.id === projectId) {
+                    addChatBubble(g.reply_message, 'ai', g);
+                }
+            } catch (e) { console.warn("AI greeting unavailable", e); }
+        }
     }
 
     function renderWorkspaceUI() {
@@ -869,8 +506,9 @@
             return alert("Estimate has no line items yet.");
         }
         const total = currentProject.estimate_items.reduce((acc, r) => acc + (Number(r.qty || 1) * Number(r.price || 0)), 0);
+        await ensureInvoiceNumber();
         currentProject.invoice_data = {
-            invoice_number: currentProject.invoice_data?.invoice_number || `INV-${Math.floor(1000 + Math.random() * 9000)}`,
+            invoice_number: currentProject.invoice_number,
             invoice_date: currentProject.invoice_data?.invoice_date || new Date().toISOString().slice(0, 10),
             notes: currentProject.invoice_data?.notes || "Thank you for your business! Payment due upon receipt.",
             items: JSON.parse(JSON.stringify(currentProject.estimate_items))
@@ -886,7 +524,7 @@
     // --- 6. TAB 3: INVOICE ---
     function renderInvoiceTab() {
         const inv = currentProject.invoice_data || {};
-        document.getElementById('invNumber').value = inv.invoice_number || `INV-${(currentProject.id || '100').slice(0, 4).toUpperCase()}`;
+        document.getElementById('invNumber').value = currentProject.invoice_number || inv.invoice_number || '';
         document.getElementById('invDate').value = inv.invoice_date || new Date().toISOString().slice(0, 10);
         document.getElementById('invNotes').value = inv.notes || "Thank you for your business!";
 
@@ -921,7 +559,6 @@
 
     function updateInvoiceMeta() {
         if (!currentProject.invoice_data) currentProject.invoice_data = { items: [] };
-        currentProject.invoice_data.invoice_number = document.getElementById('invNumber').value;
         currentProject.invoice_data.invoice_date = document.getElementById('invDate').value;
         currentProject.invoice_data.notes = document.getElementById('invNotes').value;
     }
@@ -954,6 +591,7 @@
 
     async function saveInvoiceToDB() {
         updateInvoiceMeta();
+        await ensureInvoiceNumber();
         const items = currentProject.invoice_data.items || [];
         const total = items.reduce((acc, r) => acc + (Number(r.qty || 1) * Number(r.price || 0)), 0);
         await saveProjectUpdates({
@@ -965,17 +603,14 @@
 
     async function markInvoicePaid() {
         updateInvoiceMeta();
-        const items = currentProject.invoice_data.items || [];
-        const total = items.reduce((acc, r) => acc + (Number(r.qty || 1) * Number(r.price || 0)), 0);
-        const finalAmount = total > 0 ? total : Number(currentProject.estimated_amount || 0);
-
-        await saveProjectUpdates({
-            invoice_data: currentProject.invoice_data,
-            estimated_amount: finalAmount,
-            actual_amount: finalAmount,
-            payment_status: 'paid'
-        });
-        alert(`Invoice marked as PAID ($${finalAmount.toFixed(2)})! Status is now 🟢 PAID.`);
+        await ensureInvoiceNumber();
+        await saveProjectUpdates({ invoice_data: currentProject.invoice_data });
+        const data = await postJSON(`/projects/${currentProject.id}/mark-paid`);
+        if (!data) return;
+        applyBalance(data.project);
+        await loadClientsTree();
+        renderWorkspaceUI();
+        alert("Invoice marked as PAID. Status is now 🟢 PAID.");
     }
 
     // --- 7. TAB 4: EXPENSES & RECEIPTS (AI SCANNER) ---
@@ -1079,19 +714,20 @@
     }
 
     async function togglePaymentStatus() {
-        const nextStatus = isProjectDebt(currentProject) ? 'paid' : 'debt';
-        const updates = { payment_status: nextStatus };
-        if (nextStatus === 'paid' && Number(currentProject.actual_amount || 0) < Number(currentProject.estimated_amount || 0)) {
-            updates.actual_amount = currentProject.estimated_amount;
+        if (!isProjectDebt(currentProject)) {
+            return alert("Status is calculated automatically from payments vs. the invoice/estimate total.");
         }
-        await saveProjectUpdates(updates);
+        const data = await postJSON(`/projects/${currentProject.id}/mark-paid`);
+        if (!data) return;
+        applyBalance(data.project);
+        await loadClientsTree();
+        renderWorkspaceUI();
     }
 
     async function markAllClientProjectsPaid() {
-        await fetch(`${API_BASE}/clients/${currentClient.id}/mark-all-paid`, { method: "POST" });
-        currentProject.payment_status = 'paid';
-        await loadClientsTree();
-        renderWorkspaceUI();
+        const data = await postJSON(`/clients/${currentClient.id}/mark-all-paid`);
+        if (!data) return;
+        await openProjectWorkspace(currentClient.id, currentProject.id);
     }
 
     // --- 9. AI ASSISTANT CHAT (VOICE + JSON VIEW) ---
@@ -1202,6 +838,3 @@
 
     renderBusinessHeaders();
     loadClientsTree();
-</script>
-</body>
-</html>

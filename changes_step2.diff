@@ -1,0 +1,437 @@
+--- /tmp/main_step1.py	2026-11-14 18:10:41.181865546 +0000
++++ main.py	2026-11-14 18:11:10.743592487 +0000
+@@ -1,10 +1,12 @@
+ import os
+-import shutil
+ import json
+ import base64
++import logging
++import tempfile
+ from collections import defaultdict
+ from datetime import datetime
+ from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
++from zoneinfo import ZoneInfo
+ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+ from fastapi.middleware.cors import CORSMiddleware
+ from pydantic import BaseModel, Field
+@@ -17,12 +19,22 @@
+ SUPABASE_URL = os.getenv("SUPABASE_URL")
+ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
++APP_TIMEZONE = os.getenv("APP_TIMEZONE", "America/New_York")
++CORS_ORIGINS = [
++    o.strip() for o in os.getenv(
++        "CORS_ORIGINS",
++        "http://localhost:5500,http://127.0.0.1:5500,http://localhost:8000,http://127.0.0.1:8000",
++    ).split(",") if o.strip()
++]
++
++log = logging.getLogger("crm")
++APP_TZ = ZoneInfo(APP_TIMEZONE)  # fails fast at startup if the timezone name is wrong
+ 
+ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+ openai_client = OpenAI(api_key=OPENAI_API_KEY)
+ 
+ app = FastAPI(title="Agentic CRM API")
+-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
++app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
+ 
+ # --- DATA MODELS ---
+ class ClientModel(BaseModel):
+@@ -105,11 +117,50 @@
+ Always reply in the same language the user speaks to you (default to English for system init).
+ """
+ 
++# --- TIME, VALIDATION & UPLOAD HELPERS ---
++def today_local() -> str:
++    """Today's date (YYYY-MM-DD) in the business timezone (APP_TIMEZONE env var)."""
++    return datetime.now(APP_TZ).strftime("%Y-%m-%d")
++
++# Fields a client may change through PUT. Anything else is rejected with 400.
++# Never allowed: id, client_id, payment_status, actual_amount, invoice_number, created_at.
++CLIENT_FIELDS = {"name", "phone", "comment"}
++PROJECT_FIELDS = {
++    "name", "address", "scope_description", "estimated_amount",
++    "work_plan", "estimate_items", "invoice_data", "archived",
++}
++
++def validate_updates(updates: dict, allowed: set[str], entity: str) -> dict:
++    rejected = sorted(set(updates) - allowed)
++    if rejected:
++        raise HTTPException(
++            status_code=400,
++            detail=f"Fields not allowed for {entity}: {', '.join(rejected)}. Allowed: {', '.join(sorted(allowed))}.",
++        )
++    return updates
++
++MAX_RECEIPT_BYTES = 10 * 1024 * 1024
++MAX_AUDIO_BYTES = 25 * 1024 * 1024
++AUDIO_EXTENSIONS = {
++    "audio/webm": ".webm", "video/webm": ".webm",
++    "audio/ogg": ".ogg",
++    "audio/mp4": ".mp4", "audio/x-m4a": ".m4a", "audio/m4a": ".m4a",
++    "audio/mpeg": ".mp3", "audio/mp3": ".mp3",
++    "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/wave": ".wav",
++}
++
++def base_content_type(upload: UploadFile) -> str:
++    return (upload.content_type or "").split(";")[0].strip().lower()
++
++def read_limited(upload: UploadFile, max_bytes: int, label: str) -> bytes:
++    data = upload.file.read(max_bytes + 1)
++    if len(data) > max_bytes:
++        raise HTTPException(status_code=413, detail=f"{label} is too large (max {max_bytes // (1024 * 1024)} MB).")
++    return data
++
+ # --- MONEY & BALANCE (single source of truth for paid / debt) ---
+ CENT = Decimal("0.01")
+ ZERO = Decimal("0.00")
+-# Derived by the backend; never accepted from client input.
+-PROTECTED_PROJECT_FIELDS = {"payment_status", "actual_amount"}
+ 
+ def to_money(value) -> Decimal:
+     try:
+@@ -147,7 +198,10 @@
+ 
+ def compute_balance(project: dict, payments: list[dict]) -> dict:
+     """Pure calculation. total_due = invoice total if an invoice exists, else the estimate."""
+-    inv = invoice_total(project)
++    if "invoice_data" in project:
++        inv = invoice_total(project)
++    else:  # list views skip the heavy JSON column and carry the stored total instead
++        inv = to_money(project.get("invoice_total"))
+     total_due = inv if inv > 0 else to_money(project.get("estimated_amount"))
+     total_paid = sum((to_money(p.get("amount")) for p in payments), ZERO)
+     is_debt = total_due > total_paid
+@@ -255,7 +309,7 @@
+             "kind": "income" if (changes.transaction_category or "").lower() == "income" else "expense",
+             "vendor": changes.transaction_vendor or "AI Assistant",
+             "description": changes.transaction_description,
+-            "date_purchased": datetime.utcnow().strftime("%Y-%m-%d"),
++            "date_purchased": today_local(),
+             "items": []
+         }).execute()
+ 
+@@ -263,7 +317,13 @@
+ @app.get("/api/clients")
+ def get_clients():
+     clients = supabase.table("clients").select("*").order("created_at", desc=False).execute().data
+-    projects = supabase.table("projects").select("*").order("created_at", desc=True).execute().data
++    projects = (
++        supabase.table("projects")
++        .select("id, client_id, name, address, estimated_amount, invoice_total, invoice_number, archived, created_at")
++        .eq("archived", False)
++        .order("created_at", desc=True)
++        .execute().data
++    )
+     
+     payments_by_project = defaultdict(list)
+     for pay in fetch_all("payments", "id, project_id, amount"):
+@@ -282,7 +342,10 @@
+ 
+ @app.put("/api/clients/{client_id}")
+ def update_client_manual(client_id: str, payload: ManualUpdateModel):
+-    res = supabase.table("clients").update(payload.updates).eq("id", client_id).execute()
++    updates = validate_updates(payload.updates, CLIENT_FIELDS, "client")
++    if not updates:
++        return {"status": "ok"}
++    res = supabase.table("clients").update(updates).eq("id", client_id).execute()
+     return res.data[0] if res.data else {"status": "ok"}
+ 
+ @app.post("/api/clients/{client_id}/mark-all-paid")
+@@ -297,22 +360,22 @@
+ @app.post("/api/projects")
+ def create_project(project: ProjectModel):
+     data = project.model_dump(exclude_none=True)
++    data["work_plan"] = []
++    data["estimate_items"] = []
++    data["invoice_data"] = {}
+     try:
+-        data["work_plan"] = []
+-        data["estimate_items"] = []
+-        data["invoice_data"] = {}
+-        return attach_balance(supabase.table("projects").insert(data).execute().data[0], [])
+-    except Exception:
+-        # Fallback if SQL columns weren't added yet
+-        data.pop("work_plan", None)
+-        data.pop("estimate_items", None)
+-        data.pop("invoice_data", None)
+-        return attach_balance(supabase.table("projects").insert(data).execute().data[0], [])
++        row = supabase.table("projects").insert(data).execute().data[0]
++    except Exception as e:
++        log.exception("create_project failed")
++        raise HTTPException(status_code=500, detail=f"Could not create project (did you run schema.sql?): {e}")
++    return attach_balance(row, [])
+ 
+ @app.put("/api/projects/{project_id}")
+ def update_project_manual(project_id: str, payload: ManualUpdateModel):
+-    # payment_status / actual_amount are derived from payments; silently ignore them if sent.
+-    updates = {k: v for k, v in payload.updates.items() if k not in PROTECTED_PROJECT_FIELDS}
++    updates = validate_updates(payload.updates, PROJECT_FIELDS, "project")
++    if "invoice_data" in updates:
++        # keep the stored total in sync so list views can compute debt without loading invoice_data
++        updates["invoice_total"] = str(invoice_total({"invoice_data": updates["invoice_data"]}))
+     try:
+         if updates:
+             supabase.table("projects").update(updates).eq("id", project_id).execute()
+@@ -320,8 +383,20 @@
+     except HTTPException:
+         raise
+     except Exception as e:
++        log.exception("update_project_manual failed")
+         raise HTTPException(status_code=400, detail=f"Database error (make sure you ran schema.sql in Supabase): {str(e)}")
+ 
++@app.post("/api/projects/{project_id}/invoice-number")
++def assign_invoice_number(project_id: str):
++    """Idempotent: returns the project's invoice number, assigning the next INV-#### the first time."""
++    get_project_or_404(project_id)
++    try:
++        res = supabase.rpc("assign_invoice_number", {"p_project_id": project_id}).execute()
++    except Exception as e:
++        log.exception("assign_invoice_number failed")
++        raise HTTPException(status_code=500, detail=f"Could not assign invoice number (re-run schema.sql?): {e}")
++    return {"invoice_number": res.data}
++
+ # --- PAYMENTS ---
+ @app.get("/api/projects/{project_id}/payments")
+ def list_payments(project_id: str):
+@@ -348,10 +423,13 @@
+ 
+ # --- RECEIPT OCR SCANNER ---
+ @app.post("/api/projects/{project_id}/scan-receipt")
+-async def scan_receipt(project_id: str, client_id: str = Form(...), receipt_file: UploadFile = File(...)):
+-    file_bytes = await receipt_file.read()
++def scan_receipt(project_id: str, client_id: str = Form(...), receipt_file: UploadFile = File(...)):
++    # plain `def`: FastAPI runs it in a threadpool, so the sync OpenAI/Supabase calls don't block the server
++    mime_type = base_content_type(receipt_file)
++    if not mime_type.startswith("image/"):
++        raise HTTPException(status_code=415, detail="Receipts must be image files.")
++    file_bytes = read_limited(receipt_file, MAX_RECEIPT_BYTES, "Receipt image")
+     base64_image = base64.b64encode(file_bytes).decode("utf-8")
+-    mime_type = receipt_file.content_type or "image/jpeg"
+ 
+     prompt = """
+     Analyze this receipt image and extract:
+@@ -461,22 +539,30 @@
+ 
+ @app.get("/api/project-workspace/{client_id}/{project_id}")
+ def load_project_workspace(client_id: str, project_id: str):
++    # Never calls OpenAI, so opening a project cannot fail because of the AI.
+     history_res = supabase.table("chat_messages").select("*").eq("project_id", project_id).order("created_at", desc=False).execute()
+     messages = history_res.data or []
+-    
+-    if len(messages) == 0:
+-        run_ai_turn("__INIT_PROJECT__", client_id, project_id, is_init=True)
+-        history_res = supabase.table("chat_messages").select("*").eq("project_id", project_id).order("created_at", desc=False).execute()
+-        messages = history_res.data or []
+-
+     client, project, transactions = get_full_context(client_id, project_id)
+     return {
+         "messages": messages,
+         "client": client,
+         "project": project,
+-        "transactions": transactions
++        "transactions": transactions,
++        "needs_greeting": len(messages) == 0,
+     }
+ 
++@app.post("/api/project-greeting/{client_id}/{project_id}")
++def project_greeting(client_id: str, project_id: str):
++    """Generates the first AI summary for a project. The frontend calls this after the workspace has loaded."""
++    existing = supabase.table("chat_messages").select("id").eq("project_id", project_id).limit(1).execute().data
++    if existing:
++        return {"status": "exists"}
++    try:
++        return run_ai_turn("__INIT_PROJECT__", client_id, project_id, is_init=True)
++    except Exception:
++        log.exception("AI greeting failed")
++        raise HTTPException(status_code=502, detail="The AI assistant is unavailable right now. Use 'Check Missing Fields' to retry.")
++
+ @app.post("/api/project-chat/recheck")
+ def force_recheck_context(payload: ChatInput):
+     return run_ai_turn("__INIT_PROJECT__", payload.client_id, payload.project_id, is_init=True)
+@@ -486,14 +572,23 @@
+     return run_ai_turn(payload.text, payload.client_id, payload.project_id, is_init=False)
+ 
+ @app.post("/api/voice-command")
+-async def process_voice_command(audio_file: UploadFile = File(...), client_id: str = Form(...), project_id: str = Form(...)):
+-    temp_path = f"temp_{audio_file.filename}"
+-    with open(temp_path, "wb") as buffer:
+-        shutil.copyfileobj(audio_file.file, buffer)
++def process_voice_command(audio_file: UploadFile = File(...), client_id: str = Form(...), project_id: str = Form(...)):
++    ext = AUDIO_EXTENSIONS.get(base_content_type(audio_file))
++    if ext is None:
++        raise HTTPException(status_code=415, detail="Unsupported audio type.")
++    data = read_limited(audio_file, MAX_AUDIO_BYTES, "Audio recording")
++
++    # Random temp name + suffix from the content type; the client's filename is never used.
++    tmp = tempfile.NamedTemporaryFile(prefix="voice_", suffix=ext, delete=False)
++    temp_path = tmp.name
+     try:
++        with tmp:
++            tmp.write(data)
+         with open(temp_path, "rb") as audio:
+             transcript = openai_client.audio.transcriptions.create(model="whisper-1", file=audio)
+         return run_ai_turn(transcript.text, client_id, project_id, is_init=False)
+     finally:
+-        if os.path.exists(temp_path):
+-            os.remove(temp_path)
+\ No newline at end of file
++        try:
++            os.remove(temp_path)
++        except FileNotFoundError:
++            pass
+--- /tmp/index_step1.html	2026-11-14 18:10:41.185752676 +0000
++++ index.html	2026-11-14 18:11:10.744764015 +0000
+@@ -270,7 +270,7 @@
+                 </div>
+                 <div style="text-align:right;">
+                     <div style="margin-bottom:6px;">
+-                        <strong>Invoice #:</strong> <input type="text" id="invNumber" style="width:110px; padding:3px 6px;" onchange="updateInvoiceMeta()">
++                        <strong>Invoice #:</strong> <input type="text" id="invNumber" readonly placeholder="assigned on save" style="width:110px; padding:3px 6px; background:#f3f4f6;">
+                         <strong>Date:</strong> <input type="date" id="invDate" style="width:130px; padding:3px 6px;" onchange="updateInvoiceMeta()">
+                     </div>
+                     <strong>Bill To:</strong><br>
+@@ -514,6 +514,19 @@
+             .forEach(k => { currentProject[k] = p[k]; });
+     }
+ 
++    // Invoice numbers are assigned by the server (sequential, never random).
++    async function ensureInvoiceNumber() {
++        if (!currentProject.invoice_number) {
++            const data = await postJSON(`/projects/${currentProject.id}/invoice-number`);
++            if (data) currentProject.invoice_number = data.invoice_number;
++        }
++        if (!currentProject.invoice_data || typeof currentProject.invoice_data !== 'object') {
++            currentProject.invoice_data = { items: [] };
++        }
++        if (currentProject.invoice_number) currentProject.invoice_data.invoice_number = currentProject.invoice_number;
++        return currentProject.invoice_number;
++    }
++
+     async function addPaymentPrompt() {
+         const val = prompt("Payment received ($):", "");
+         if (val === null || val.trim() === "") return;
+@@ -682,6 +695,17 @@
+             }
+             addChatBubble(m.content, m.role === 'user' ? 'user' : 'ai', parsedJson);
+         });
++
++        // The workspace loads without the AI; request the first summary afterwards.
++        if (data.needs_greeting) {
++            try {
++                const gRes = await fetch(`${API_BASE}/project-greeting/${clientId}/${projectId}`, { method: "POST" });
++                const g = await gRes.json();
++                if (gRes.ok && g.reply_message && currentProject && currentProject.id === projectId) {
++                    addChatBubble(g.reply_message, 'ai', g);
++                }
++            } catch (e) { console.warn("AI greeting unavailable", e); }
++        }
+     }
+ 
+     function renderWorkspaceUI() {
+@@ -896,8 +920,9 @@
+             return alert("Estimate has no line items yet.");
+         }
+         const total = currentProject.estimate_items.reduce((acc, r) => acc + (Number(r.qty || 1) * Number(r.price || 0)), 0);
++        await ensureInvoiceNumber();
+         currentProject.invoice_data = {
+-            invoice_number: currentProject.invoice_data?.invoice_number || `INV-${Math.floor(1000 + Math.random() * 9000)}`,
++            invoice_number: currentProject.invoice_number,
+             invoice_date: currentProject.invoice_data?.invoice_date || new Date().toISOString().slice(0, 10),
+             notes: currentProject.invoice_data?.notes || "Thank you for your business! Payment due upon receipt.",
+             items: JSON.parse(JSON.stringify(currentProject.estimate_items))
+@@ -913,7 +938,7 @@
+     // --- 6. TAB 3: INVOICE ---
+     function renderInvoiceTab() {
+         const inv = currentProject.invoice_data || {};
+-        document.getElementById('invNumber').value = inv.invoice_number || `INV-${(currentProject.id || '100').slice(0, 4).toUpperCase()}`;
++        document.getElementById('invNumber').value = currentProject.invoice_number || inv.invoice_number || '';
+         document.getElementById('invDate').value = inv.invoice_date || new Date().toISOString().slice(0, 10);
+         document.getElementById('invNotes').value = inv.notes || "Thank you for your business!";
+ 
+@@ -948,7 +973,6 @@
+ 
+     function updateInvoiceMeta() {
+         if (!currentProject.invoice_data) currentProject.invoice_data = { items: [] };
+-        currentProject.invoice_data.invoice_number = document.getElementById('invNumber').value;
+         currentProject.invoice_data.invoice_date = document.getElementById('invDate').value;
+         currentProject.invoice_data.notes = document.getElementById('invNotes').value;
+     }
+@@ -981,6 +1005,7 @@
+ 
+     async function saveInvoiceToDB() {
+         updateInvoiceMeta();
++        await ensureInvoiceNumber();
+         const items = currentProject.invoice_data.items || [];
+         const total = items.reduce((acc, r) => acc + (Number(r.qty || 1) * Number(r.price || 0)), 0);
+         await saveProjectUpdates({
+@@ -992,6 +1017,7 @@
+ 
+     async function markInvoicePaid() {
+         updateInvoiceMeta();
++        await ensureInvoiceNumber();
+         await saveProjectUpdates({ invoice_data: currentProject.invoice_data });
+         const data = await postJSON(`/projects/${currentProject.id}/mark-paid`);
+         if (!data) return;
+--- /tmp/schema_step1.sql	2026-11-14 18:10:41.187258646 +0000
++++ schema.sql	2026-11-14 17:36:11.160561000 +0000
+@@ -27,6 +27,7 @@
+   estimate_items    jsonb not null default '[]'::jsonb,
+   invoice_data      jsonb not null default '{}'::jsonb,
+   invoice_number    text,
++  invoice_total     numeric(12,2) not null default 0,    -- kept in sync by the backend from invoice_data
+   archived          boolean not null default false,
+   created_at        timestamptz not null default now()
+ );
+@@ -39,6 +40,7 @@
+ alter table projects add column if not exists estimate_items    jsonb not null default '[]'::jsonb;
+ alter table projects add column if not exists invoice_data      jsonb not null default '{}'::jsonb;
+ alter table projects add column if not exists invoice_number    text;
++alter table projects add column if not exists invoice_total     numeric(12,2) not null default 0;
+ alter table projects add column if not exists archived          boolean not null default false;
+ 
+ update projects set estimated_amount = 0 where estimated_amount is null;
+@@ -140,3 +142,42 @@
+    where actual_amount > 0
+      and exists (select 1 from payments x where x.project_id = projects.id and x.method = 'migrated');
+ end $$;
++
++-- ───────────── sequential invoice numbers (INV-0001, INV-0002, ...) ─────────────
++create sequence if not exists invoice_number_seq;
++
++-- Idempotent: returns the project's existing number, or assigns the next one.
++create or replace function assign_invoice_number(p_project_id uuid) returns text
++language plpgsql as $$
++declare
++  v text;
++begin
++  select invoice_number into v from projects where id = p_project_id for update;
++  if not found then
++    raise exception 'project % not found', p_project_id;
++  end if;
++  if v is null then
++    v := 'INV-' || lpad(nextval('invoice_number_seq')::text, 4, '0');
++    update projects set invoice_number = v where id = p_project_id;
++  end if;
++  return v;
++end $$;
++
++-- ───────────── one-time backfill of projects.invoice_total from invoice_data ─────────────
++do $$
++begin
++  update projects p set invoice_total = coalesce((
++    select round(sum(
++      (case when coalesce((it->>'qty')::numeric, 0) = 0 then 1 else (it->>'qty')::numeric end)
++      * coalesce((it->>'price')::numeric, 0)
++    ), 2)
++    from jsonb_array_elements(
++      case when jsonb_typeof(p.invoice_data->'items') = 'array' then p.invoice_data->'items' else '[]'::jsonb end
++    ) it
++  ), 0);
++exception when others then
++  raise notice 'invoice_total backfill skipped: %', sqlerrm;
++end $$;
++
++-- make Supabase's API pick up the new column and function immediately
++notify pgrst, 'reload schema';
