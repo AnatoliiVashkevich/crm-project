@@ -1,8 +1,7 @@
 fastapi>=0.110
 uvicorn[standard]>=0.29
-python-multipart>=0.0.9
+python-multipart>=0.0.9   # photo uploads (multipart forms)
 pydantic>=2.6
-openai>=1.40
 supabase>=2.4
 python-dotenv>=1.0
-reportlab
+reportlab>=4.0            # invoice PDFs

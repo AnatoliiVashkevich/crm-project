@@ -1,5 +1,15 @@
-# Ignore local environment variables and virtual environments
+# Secrets: never commit real keys (copy .env.example to .env and fill it in)
 .env
-venv/
+.env.*
+!.env.example
+
+# Python
 __pycache__/
+*.pyc
+venv/
+.venv/
+.pytest_cache/
+
+# Scratch files
 temp_*
+.DS_Store
