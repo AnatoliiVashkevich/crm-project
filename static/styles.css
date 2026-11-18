@@ -1908,3 +1908,38 @@ a {
   .money-more { display: none; }
   .money-more.open { display: contents; }
 }
+
+/* ---------- Project picker in the task form (type to search, create if nothing matches) ---------- */
+.picker { position: relative; }
+.picker-list { position: absolute; left: 0; right: 0; top: 100%; z-index: 20; margin-top: 4px; max-height: 300px;
+  overflow-y: auto; background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg); padding: 6px; }
+.picker-item { display: block; width: 100%; text-align: left; padding: 9px 10px; border-radius: 8px; font-size: 14px;
+  background: none; border: 0; cursor: pointer; color: var(--dark); }
+.picker-item:hover, .picker-item:focus { background: var(--primary-light); }
+.picker-create { font-weight: 700; color: var(--primary); border-bottom: 1px solid var(--border); border-radius: 8px 8px 0 0; }
+.picker-group { padding: 8px 10px 2px; font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--secondary); }
+.picker-empty { padding: 10px; font-size: 13px; color: var(--secondary); }
+
+/* client work status: Today / Tomorrow */
+.badge-today { background: #FFEDD5; color: #C2410C; }
+.badge-tomorrow { background: #FEF9C3; color: #A16207; }
+
+/* Phone-only buttons (☰ open menu, ✕ close menu, round +) never show on a computer:
+   the menu is always visible there. (.icon-btn's own display rule used to win over .mobile-only.) */
+@media (min-width: 769px) {
+  .mobile-only { display: none !important; }
+}
+
+/* search box above the Clients table */
+.list-search { flex: 1; min-width: 220px; }
+@media (max-width: 768px) { .list-search { min-width: 0; width: 100%; flex-basis: 100%; } }
+
+/* Tasks screen: search + employee (+ Sort on phones) in one row */
+.task-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; width: 100%; }
+.task-tools input[type="search"] { flex: 1; min-width: 220px; padding: 7px 12px; font-size: 14px; }
+.task-tools .filter-select { width: auto; }
+@media (max-width: 768px) {
+  .task-tools input[type="search"] { min-width: 0; flex-basis: 100%; }
+  .task-tools .filter-select { flex: 1; }
+}

@@ -49,7 +49,8 @@
         <button class="icon-btn" data-action="sign-out" title="Sign out" aria-label="Sign out">⎋</button>
       </div>
 
-      <!-- The whole menu: 5 items (Money shows only Expenses to Employees) -->
+      <!-- The whole menu: Tasks, Clients, Money (Employees: only their expenses), Team (Owner / Manager), Settings.
+           Projects open from a client's card. -->
       <nav class="sidebar-nav">
         <button class="nav-item active" data-nav="tasks">
           <span class="nav-icon">☑️</span><span class="nav-label">Tasks</span>
@@ -58,12 +59,12 @@
         <button class="nav-item" data-nav="clients">
           <span class="nav-icon">👥</span><span class="nav-label">Clients</span>
         </button>
-        <button class="nav-item" data-nav="projects">
-          <span class="nav-icon">📁</span><span class="nav-label">Projects</span>
-        </button>
         <button class="nav-item" data-nav="money">
           <span class="nav-icon">💵</span><span class="nav-label" id="navMoneyLabel">Money</span>
           <span id="navUnpaidBadge" class="nav-pill pill-danger" hidden>0</span>
+        </button>
+        <button class="nav-item" data-nav="team" id="navTeam">
+          <span class="nav-icon">👷</span><span class="nav-label">Team</span>
         </button>
         <button class="nav-item" data-nav="settings">
           <span class="nav-icon">⚙️</span><span class="nav-label">Settings</span>
@@ -85,15 +86,11 @@
           <button id="topbarBackBtn" class="back-btn" hidden>← Back</button>
           <div class="topbar-titles">
             <h1 id="pageTitle" class="page-title">Tasks</h1>
-            <nav id="breadcrumbs" class="breadcrumbs" aria-label="Breadcrumb"></nav>
           </div>
         </div>
 
         <div class="topbar-right">
-          <div id="globalSearchWrap" class="search-box">
-            <span class="search-icon" aria-hidden="true">🔍</span>
-            <input id="globalSearchInput" type="search" placeholder="Search tasks, clients, projects..." autocomplete="off">
-          </div>
+          <!-- (search lives on each screen, right above its table) -->
           <!-- "Saving..." -> "Saved ✓" (api.js setSave) -->
           <span id="saveState" class="save" role="status" aria-live="polite"></span>
           <!-- Edit / Delete of the record on screen (set by app.js) -->
@@ -122,7 +119,6 @@
       <nav class="mobile-bottom-nav mobile-only" aria-label="Mobile Navigation">
         <button class="mob-nav-item active" data-nav="tasks"><span class="mob-icon">☑️</span><span class="mob-label">Tasks</span></button>
         <button class="mob-nav-item" data-nav="clients"><span class="mob-icon">👥</span><span class="mob-label">Clients</span></button>
-        <button class="mob-nav-item" data-nav="projects"><span class="mob-icon">📁</span><span class="mob-label">Projects</span></button>
         <button class="mob-nav-item" data-nav="money"><span class="mob-icon">💵</span><span class="mob-label">Money</span></button>
         <button id="mobMoreBtn" class="mob-nav-item"><span class="mob-icon">⋯</span><span class="mob-label">More</span></button>
       </nav>

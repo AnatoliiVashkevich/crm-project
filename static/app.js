@@ -51,10 +51,9 @@ const state = {
 
   view: "tasks",
   selectedId: null,
-  projectTab: "overview",   // overview | tasks | documents | expenses | photos
+  projectTab: "tasks",      // tasks | documents | expenses | photos
   moneyTab: "reports",      // reports (opens first) | documents | expenses
   history: [],
-  showMobileFilters: false,
 
   // Data from Backend
   profile: {},
@@ -64,13 +63,8 @@ const state = {
   invoices: [],
   receipts: [],
 
-  // Unified Task Filters & Sorting
+  // Tasks screen: search text (shared by the search box of each screen) + employee filter
   search: "",
-  taskQuickChip: "all",
-  filterStatus: "all",
-  filterPriority: "all",
-  filterClient: "all",
-  filterProject: "all",
   filterAssignee: "all",
   clientFilter: "all",   // all | unpaid  ([ All Clients ] / [ 🔴 Unpaid Only ])
   // Money screen filters (search text comes from the search box)
@@ -82,7 +76,6 @@ const state = {
   sorts: {
     tasks: { key: "date", dir: "asc" },
     clients: { key: "name", dir: "asc" },
-    projects: { key: "client", dir: "asc" },
     documents: { key: "date", dir: "desc" },
     expenses: { key: "date", dir: "desc" },
   },
@@ -139,9 +132,11 @@ async function syncCRM(silent = false) {
 // ---------- Navigation & Shell Updates ----------
 function navigate(view, id = null, pushHistory = true) {
   if (isEmployee() && view === "money") state.moneyTab = "expenses";   // employees: only their receipts
+  if (isEmployee() && view === "team") view = "tasks";                 // the team screen is for Owner / Manager
   if (pushHistory && (state.view !== view || !sameId(state.selectedId, id))) {
     state.history.push({ view: state.view, selectedId: state.selectedId, projectTab: state.projectTab });
   }
+  if (state.view !== view) state.search = "";   // each screen starts with an empty search box
   state.view = view;
   state.selectedId = id;
   closeMobileDrawer();
@@ -156,7 +151,7 @@ function goBack() {
   if (prev) {
     state.view = prev.view;
     state.selectedId = prev.selectedId;
-    state.projectTab = prev.projectTab || "overview";
+    state.projectTab = prev.projectTab || "tasks";
     updateShellUI();
     renderCurrentView();
   } else {
@@ -217,9 +212,10 @@ function updateShellUI() {
   $("userAvatar").textContent = initials(me.name);
   $("brandCompany").textContent = state.profile.company_name || "Field Service";
   $("navMoneyLabel").textContent = isEmployee() ? "My Expenses" : "Money";
+  $("navTeam").hidden = isEmployee();
 
   // highlight the menu item of the current screen (task-detail -> Tasks, ...)
-  const baseView = { "task-detail": "tasks", "client-detail": "clients", "project-detail": "projects" }[state.view] || state.view;
+  const baseView = { "task-detail": "tasks", "client-detail": "clients", "project-detail": "clients" }[state.view] || state.view;   // projects live inside clients
   document.querySelectorAll("[data-nav]").forEach(btn => btn.classList.toggle("active", btn.dataset.nav === baseView));
 
   // counters: open tasks, unpaid invoices, notifications
@@ -376,12 +372,10 @@ function renderApprovalBanner(entityKind, item) {
 function renderCurrentView() {
   const ws = $("workspace");
   const titleEl = $("pageTitle");
-  const crumbsEl = $("breadcrumbs");
   const actionsEl = $("topbarActions");
   const fab = $("mobileFab");
 
   // the "+ New" button (top right / round on phones) is the same on every screen; detail screens add Edit / Delete
-  crumbsEl.innerHTML = "";
   actionsEl.innerHTML = "";
   if (fab) fab.hidden = false;
 
@@ -396,11 +390,7 @@ function renderCurrentView() {
     case "client-detail":
       ws.innerHTML = renderClientDetailView(state.selectedId);
       break;
-    case "projects":
-      titleEl.textContent = "Projects";
-      ws.innerHTML = renderProjectsView();
-      break;
-    case "project-detail":
+    case "project-detail":   // projects open from a client's card or a task (there is no Projects list)
       ws.innerHTML = renderProjectDetailView(state.selectedId);
       break;
     case "money":
@@ -410,6 +400,10 @@ function renderCurrentView() {
     case "notifications":
       titleEl.textContent = "Notifications & Approvals";
       ws.innerHTML = renderNotificationsView();
+      break;
+    case "team":
+      titleEl.textContent = "Team";
+      ws.innerHTML = renderTeamSection();
       break;
     case "settings":
       titleEl.textContent = "Settings";
@@ -433,23 +427,10 @@ function getRoleFilteredTasks() {
   return state.tasks;
 }
 
-// Tasks list after quick chips, dropdown filters, search text and sorting
+// Tasks list after the employee filter, search text and sorting
 function getFilteredAndSortedTasks() {
   let list = getRoleFilteredTasks();
   const q = state.search.trim().toLowerCase();
-
-  if (state.taskQuickChip === "today") {
-    list = list.filter(t => t.days_diff === 0);
-  } else if (state.taskQuickChip === "overdue") {
-    list = list.filter(t => t.is_overdue);
-  } else if (state.taskQuickChip === "pending-approval") {
-    list = list.filter(t => t.approval_status !== "Approved");
-  }
-
-  if (state.filterStatus !== "all") list = list.filter(t => t.status === state.filterStatus);
-  if (state.filterPriority !== "all") list = list.filter(t => t.priority === state.filterPriority);
-  if (state.filterClient !== "all") list = list.filter(t => sameId(t.client_id, state.filterClient));
-  if (state.filterProject !== "all") list = list.filter(t => sameId(t.project_id, state.filterProject));
   if (state.filterAssignee !== "all") list = list.filter(t => t.assigned_to === state.filterAssignee);
 
   if (q) {
@@ -475,10 +456,8 @@ function time24(t) {
 const TASK_COLUMNS = {
   title: ["Task & Work Address", t => t.title],
   client: ["Client", t => t.client_name],
-  project: ["Project", t => t.project_name],
   date: ["Schedule / Due", t => `${t.visit_date || "9999"} ${time24(t.scheduled_time)}`],
-  status: ["Status", t => TASK_STATUSES.indexOf(t.status)],
-  priority: ["Priority", t => PRIORITIES.indexOf(t.priority)],
+  status: ["Status", t => taskWorkStatus(t).sort],   // Overdue → Active → Today → Tomorrow → Scheduled → Done → Canceled
   assignee: ["Assignee", t => t.assigned_name],
   hours: ["Hours (Act / Plan)", t => t.actual_hours],
 };
@@ -510,41 +489,11 @@ function formatDueDateLabel(t) {
 
 // Tasks screen: filters + desktop table + phone cards
 function renderTasksView() {
-  const baseTasks = getRoleFilteredTasks();
-  const todayCount = baseTasks.filter(t => t.days_diff === 0).length;
-  const overdueCount = baseTasks.filter(t => t.is_overdue).length;
-  const pendingApprovalCount = baseTasks.filter(t => t.approval_status !== "Approved").length;
-
   const list = getFilteredAndSortedTasks();
-
-  const chips = [
-    ["all", `All (${baseTasks.length})`],
-    ["today", `Today (${todayCount})`],
-    ["overdue", `Overdue (${overdueCount})`],
-    ...(pendingApprovalCount > 0 ? [["pending-approval", `Approvals (${pendingApprovalCount})`]] : []),
-  ].map(([k, label]) =>
-    `<button class="filter-chip ${state.taskQuickChip === k ? "active" : ""}" data-task-chip="${k}">${esc(label)}</button>`
-  ).join("");
-
-  const clientOpts = `<option value="all">All Clients</option>` + state.clients.map(c =>
-    `<option value="${esc(c.id)}" ${sameId(state.filterClient, c.id) ? "selected" : ""}>${esc(c.name)}</option>`
-  ).join("");
-
-  const projectOpts = `<option value="all">All Projects</option>` + state.projects.map(p =>
-    `<option value="${esc(p.id)}" ${sameId(state.filterProject, p.id) ? "selected" : ""}>${esc(p.name)}</option>`
-  ).join("");
 
   const assigneeOpts = `<option value="all">All Employees</option>` + state.team.map(e =>
     `<option value="${esc(e.id)}" ${state.filterAssignee === e.id ? "selected" : ""}>${esc(e.name)}</option>`
   ).join("");
-
-  const activeFiltersCount = [
-    state.filterStatus !== "all",
-    state.filterPriority !== "all",
-    state.filterClient !== "all",
-    state.filterProject !== "all",
-    state.filterAssignee !== "all",
-  ].filter(Boolean).length;
 
   const tableRows = list.map(t => {
     return `<tr class="row-clickable ${taskRowClass(t)}" data-open-task="${esc(t.id)}">
@@ -554,16 +503,13 @@ function renderTasksView() {
         ${renderApprovalBadge(t.approval_status)}
       </td>
       <td><button class="crumb-link" data-open-client="${esc(t.client_id)}" onclick="event.stopPropagation()">${esc(t.client_name)}</button></td>
-      <td><button class="crumb-link" data-open-project="${esc(t.project_id)}" onclick="event.stopPropagation()">${esc(t.project_name)}</button></td>
       <td>
         <div style="font-weight:${t.is_overdue || t.days_diff === 0 ? "600" : "400"};color:${t.is_overdue ? "var(--error-text)" : "inherit"};">
           ${esc(formatDueDateLabel(t))}
         </div>
-        ${t.is_overdue ? `<span class="badge badge-overdue" style="margin-top:4px;">! Overdue</span>` : ""}
         ${timerBadge(t)}
       </td>
-      <td>${renderStatusBadge(t.status)}</td>
-      <td>${renderPriorityBadge(t.priority)}</td>
+      <td>${taskWorkStatus(t).html}</td>
       <td>
         <div style="display:flex;align-items:center;gap:8px;">
           <span class="user-avatar" style="width:28px;height:28px;font-size:11px;">
@@ -585,19 +531,17 @@ function renderTasksView() {
       <div class="mob-task-body">
         <div class="mob-task-header">
           <div class="mob-task-title">${esc(t.title)}</div>
-          ${renderPriorityBadge(t.priority)}
+          ${taskWorkStatus(t).html}
         </div>
-        <div class="mob-task-sub">${esc(t.client_name)} • ${esc(t.project_name)}</div>
+        <div class="mob-task-sub">${esc(t.client_name)}</div>
         <div class="mob-task-addr">📍 ${esc(t.project_address || "Job site address not set")}</div>
         <div class="mob-task-footer">
           <span style="font-size:12px;font-weight:600;color:${t.is_overdue ? "var(--error-text)" : "var(--warning-text)"};">
             ${esc(formatDueDateLabel(t))}
           </span>
           <div style="display:flex;gap:6px;align-items:center;">
-            ${t.is_overdue ? `<span class="badge badge-overdue">! Overdue</span>` : ""}
             ${timerBadge(t)}
             ${renderApprovalBadge(t.approval_status)}
-            ${renderStatusBadge(t.status)}
           </div>
         </div>
       </div>
@@ -606,36 +550,11 @@ function renderTasksView() {
 
   return `
     <div class="toolbar-card">
-      <!-- Mobile Search & Filter Toggle Row -->
-      <div class="mobile-only" style="display:flex;gap:8px;width:100%;">
-        <input
-          id="mobileSearchInput"
-          type="search"
-          class="form-input"
-          style="flex:1;padding:7px 12px;font-size:14px;"
-          placeholder="🔍 Search tasks, clients, address..."
-          value="${esc(state.search)}"
-        >
-        <button class="btn btn-sm ${state.showMobileFilters || activeFiltersCount ? "btn-primary" : ""}" data-action="toggle-mob-filters">
-          ⚙️ Filters ${activeFiltersCount ? `(${activeFiltersCount})` : ""}
-        </button>
-      </div>
-
-      <div class="chip-row">${chips}</div>
-      ${sortSelect("tasks", TASK_COLUMNS)}
-
-      <div class="filter-controls" style="${!state.showMobileFilters && window.innerWidth <= 768 ? "display:none;" : ""}">
-        <select class="filter-select" id="fltStatus">
-          <option value="all">All Statuses</option>
-          ${TASK_STATUSES.map(s => `<option value="${s}" ${state.filterStatus === s ? "selected" : ""}>${s}</option>`).join("")}
-        </select>
-        <select class="filter-select" id="fltPriority">
-          <option value="all">All Priorities</option>
-          ${PRIORITIES.map(p => `<option value="${p}" ${state.filterPriority === p ? "selected" : ""}>${p} Priority</option>`).join("")}
-        </select>
-        <select class="filter-select" id="fltClient">${clientOpts}</select>
-        <select class="filter-select" id="fltProject">${projectOpts}</select>
+      <!-- Only search + employee (Owner / Manager). Phone: the Sort dropdown, because table titles are hidden there. -->
+      <div class="task-tools">
+        <input data-search="1" type="search" class="form-input" placeholder="🔍 Search tasks, clients, address..." value="${esc(state.search)}">
         ${!isEmployee() ? `<select class="filter-select" id="fltAssignee">${assigneeOpts}</select>` : ""}
+        ${sortSelect("tasks", TASK_COLUMNS)}
       </div>
     </div>
 
@@ -670,13 +589,6 @@ function renderTaskDetailView(taskId) {
   if (!t) return `<div class="empty-state">Task not found.</div>`;
 
   $("pageTitle").textContent = t.title;
-  const tClient = state.clients.find(c => sameId(c.id, t.client_id));
-  const tProject = state.projects.find(p => sameId(p.id, t.project_id));
-  $("breadcrumbs").innerHTML = `
-    <button class="crumb-link" data-open-client="${esc(t.client_id)}">${esc(t.client_name)}</button> ${debtBadge(tClient?.debt)} /
-    <button class="crumb-link" data-open-project="${esc(t.project_id)}">${esc(t.project_name)}</button> ${debtBadge(tProject?.debt)} /
-    <span>Task #${esc(String(t.id).slice(0, 8))}</span>
-  `;
   $("topbarActions").innerHTML = `
     <button class="btn" data-edit-task="${esc(t.id)}">✏️ Edit</button>
     ${!isEmployee() ? `<button class="btn btn-danger" data-delete-entity="visits" data-delete-id="${esc(t.id)}" data-back-view="tasks">🗑 Delete</button>` : ""}
@@ -880,6 +792,46 @@ function renderTaskReceiptsMiniList(task) {
 // 2. CLIENTS DIRECTORY & CLIENT DETAIL VIEW
 // ==========================================================================
 
+// Status of ONE task, in plain words (Tasks table, task cards):
+//   Overdue      still Scheduled and its date has passed (not started on time)
+//   Active       In Progress ("Active · 2 days" when it started on an earlier day)
+//   Today / Tomorrow / Scheduled · Nov 25      Scheduled
+//   Done         Completed           Canceled   Canceled
+// sort = text that puts the most urgent first (rank, then the longest-running / nearest date)
+const statusBadge = (cls, text) => `<span class="badge ${cls}">${esc(text)}</span>`;
+
+function taskWorkStatus(t) {
+  if (t.status === "Completed") return { sort: "3", open: false, html: statusBadge("st-completed", "Done") };
+  if (t.status === "Canceled") return { sort: "4", open: false, html: statusBadge("st-canceled", "Canceled") };
+  if (t.status === "In Progress") {
+    const days = Math.max(0, -(t.days_diff || 0));   // started this many days ago
+    return { sort: `1|${String(9999 - days).padStart(4, "0")}`, open: true,
+             html: statusBadge("st-in-progress", days ? `Active · ${days} day${days > 1 ? "s" : ""}` : "Active") };
+  }
+  // Scheduled
+  if (!t.visit_date) return { sort: "2|9999", open: true, html: statusBadge("st-scheduled", "Scheduled") };
+  if (t.days_diff < 0) return { sort: `0|${t.visit_date}`, open: true, html: statusBadge("badge-overdue", "Overdue") };
+  if (t.days_diff === 0) return { sort: `2|${t.visit_date}`, open: true, html: statusBadge("badge-today", "Today") };
+  if (t.days_diff === 1) return { sort: `2|${t.visit_date}`, open: true, html: statusBadge("badge-tomorrow", "Tomorrow") };
+  return { sort: `2|${t.visit_date}`, open: true, html: statusBadge("st-scheduled", `Scheduled · ${shortDate(t.visit_date)}`) };
+}
+
+// Status of a CLIENT = the most urgent status among their open tasks
+// (Overdue → Active → Today → Tomorrow → Scheduled); only Completed / Canceled tasks = Done; no tasks = "—"
+function clientWorkStatus(clientId) {
+  const tasks = state.tasks.filter(t => sameId(t.client_id, clientId));
+  const open = tasks.map(taskWorkStatus).filter(s => s.open).sort((a, b) => a.sort.localeCompare(b.sort));
+  if (open.length) return open[0];
+  if (tasks.length) return { sort: "3", html: statusBadge("st-completed", "Done") };
+  return { sort: "5", html: `<span class="inv-note">—</span>` };
+}
+
+// "2026-11-25" -> "Nov 25"
+const shortDate = iso => {
+  const [y, m, d] = String(iso).split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+};
+
 // Clients screen: [ All Clients ] / [ 🔴 Unpaid Only ] + table with debt badges
 function renderClientsView() {
   const q = state.search.trim().toLowerCase();
@@ -896,13 +848,13 @@ function renderClientsView() {
       <button class="filter-chip ${unpaidOnly ? "active" : ""}" data-client-filter="unpaid">🔴 Unpaid Only (${debtors})</button>
     </div>`;
 
-  const projCount = c => state.projects.filter(p => sameId(p.client_id, c.id)).length;
+  const workStatus = c => clientWorkStatus(c.id);
   const columns = {
     name: ["Client", c => c.name],
     phone: ["Phone", c => c.phone],
     email: ["Email", c => c.email],
     address: ["Address", c => [c.city, c.street].join(" ")],
-    projects: ["Projects", c => projCount(c)],
+    status: ["Status", c => workStatus(c).sort],
     ...(!isEmployee() ? { debt: ["Balance", c => c.debt || 0] } : {}),
   };
   const sorted = sortRows(list, "clients", columns);
@@ -919,7 +871,7 @@ function renderClientsView() {
       <td>${esc(c.phone || "—")}</td>
       <td>${esc(c.email || "—")}</td>
       <td>${esc(addr(c))}</td>
-      <td>${projCount(c)}</td>
+      <td>${workStatus(c).html}</td>
       ${!isEmployee() ? `<td>${balance(c)}</td>` : ""}
     </tr>`).join("");
 
@@ -932,11 +884,14 @@ function renderClientsView() {
     extra: `<div class="mob-card-row">
       ${c.phone ? `<a class="btn btn-sm" href="tel:${esc(c.phone)}" onclick="event.stopPropagation()">📞 ${esc(c.phone)}</a>` : ""}
       ${c.email ? `<a class="btn btn-sm" href="mailto:${esc(c.email)}" onclick="event.stopPropagation()">✉ Email</a>` : ""}
-      <span class="inv-note">${projCount(c)} project(s)</span> ${renderApprovalBadge(c.approval_status)}</div>`,
+      ${workStatus(c).html} ${renderApprovalBadge(c.approval_status)}</div>`,
   })).join("");
 
   return `
-    <div class="list-tools">${filterBar}${sortSelect("clients", columns)}</div>
+    <div class="list-tools">
+      <input type="search" class="form-input list-search" data-search="1" placeholder="🔍 Search name, company, phone, email, address..." value="${esc(state.search)}">
+      ${filterBar}${sortSelect("clients", columns)}
+    </div>
     <div class="data-card desktop-table-view">
       <div class="table-responsive">
         <table class="crm-table">
@@ -954,10 +909,8 @@ function renderClientDetailView(clientId) {
   if (!c) return `<div class="empty-state">Client not found.</div>`;
 
   const clientProjects = state.projects.filter(p => sameId(p.client_id, c.id));
-  const clientTasks = state.tasks.filter(t => sameId(t.client_id, c.id));
 
   $("pageTitle").textContent = c.name;
-  $("breadcrumbs").innerHTML = `<button class="crumb-link" data-nav="clients">Clients</button> / <span>${esc(c.name)}</span> ${debtBadge(c.debt)}`;
   $("topbarActions").innerHTML = `
     <button class="btn" data-edit-client="${esc(c.id)}">✏️ Edit</button>
     ${!isEmployee() ? `<button class="btn btn-danger" data-delete-entity="clients" data-delete-id="${esc(c.id)}" data-back-view="clients">🗑 Delete</button>` : ""}
@@ -965,9 +918,10 @@ function renderClientDetailView(clientId) {
 
   const contactAddr = [c.street, c.city, c.state, c.zip].filter(Boolean).join(", ") || "No contact address set";
 
+  // one column: contact details · projects · money (the old Summary card repeated these numbers)
   return `
     ${renderApprovalBanner("client", c)}
-    <div class="detail-grid">
+    <div>
       <div>
         <div class="section-card">
           <div class="section-header">
@@ -991,16 +945,14 @@ function renderClientDetailView(clientId) {
           ${clientProjects.length === 0 ? `<p style="color:var(--secondary);">No projects for this client yet.</p>` : `
             <div class="table-responsive">
               <table class="crm-table">
-                <thead><tr><th>Project Name</th><th>Work Address</th><th>Status</th><th>Tasks</th></tr></thead>
+                <thead><tr><th>Project Name</th><th>Work Address</th><th>Status</th></tr></thead>
                 <tbody>
                   ${clientProjects.map(p => {
-                    const pTasks = clientTasks.filter(t => sameId(t.project_id, p.id));
                     const pAddr = [p.street, p.city, p.state, p.zip].filter(Boolean).join(", ") || "—";
                     return `<tr class="row-clickable" data-open-project="${esc(p.id)}">
                       <td><strong>${esc(p.name)}</strong> ${debtBadge(p.debt)} ${renderApprovalBadge(p.approval_status)}</td>
                       <td>📍 ${esc(pAddr)}</td>
                       <td>${renderStatusBadge(p.project_status)}</td>
-                      <td>${pTasks.length} task(s)</td>
                     </tr>`;
                   }).join("")}
                 </tbody>
@@ -1016,28 +968,6 @@ function renderClientDetailView(clientId) {
           </div>
         ` : ""}
       </div>
-
-      <div>
-        <div class="section-card">
-          <div class="section-header"><h3 class="section-title">Summary</h3></div>
-          <div class="kpi-grid" style="grid-template-columns:1fr;">
-            <div class="kpi-card">
-              <div class="kpi-label">Total Projects</div>
-              <div class="kpi-value">${clientProjects.length}</div>
-            </div>
-            <div class="kpi-card">
-              <div class="kpi-label">Total Working Hours</div>
-              <div class="kpi-value">${c.total_hours || 0}h</div>
-            </div>
-            ${!isEmployee() ? `
-              <div class="kpi-card">
-                <div class="kpi-label">Unpaid Balance</div>
-                <div class="kpi-value" style="color:${c.debt > 0 ? "var(--error-text)" : "var(--success-text)"};">${usd(c.debt)}</div>
-              </div>
-            ` : ""}
-          </div>
-        </div>
-      </div>
     </div>
   `;
 }
@@ -1046,69 +976,7 @@ function renderClientDetailView(clientId) {
 // 3. PROJECTS DIRECTORY & PROJECT DETAIL VIEW
 // ==========================================================================
 
-// Projects screen: all projects with client, address, status and hours
-// task count and hours of each project (worked out once per draw)
-function projectStats(p) {
-  const tasks = state.tasks.filter(t => sameId(t.project_id, p.id));
-  return {
-    count: tasks.length,
-    planned: +tasks.reduce((s, t) => s + t.planned_hours, 0).toFixed(2),
-    actual: +tasks.reduce((s, t) => s + t.actual_hours, 0).toFixed(2),
-  };
-}
-
-const PROJECT_COLUMNS = {
-  name: ["Project", p => p.name],
-  client: ["Client", p => p.client_name],
-  address: ["Address", p => [p.city, p.street].join(" ")],
-  status: ["Status", p => p.project_status],
-  tasks: ["Tasks", p => p._stats.count],
-  hours: ["Hours", p => p._stats.actual],
-  debt: ["Unpaid", p => p.debt || 0],
-};
-
-function renderProjectsView() {
-  const q = state.search.trim().toLowerCase();
-  const columns = isEmployee() ? (({ debt, ...rest }) => rest)(PROJECT_COLUMNS) : PROJECT_COLUMNS;
-  const list = sortRows(state.projects
-    .filter(p => !q || [p.name, p.client_name, p.street, p.city, p.clean_description]
-      .some(v => String(v || "").toLowerCase().includes(q)))
-    .map(p => ({ ...p, _stats: projectStats(p) })), "projects", columns);
-  const addr = p => [p.street, p.city, p.state, p.zip].filter(Boolean).join(", ") || "—";
-
-  const rows = list.map(p => `<tr class="row-clickable" data-open-project="${esc(p.id)}">
-      <td><div style="font-weight:600;color:var(--dark);">${esc(p.name)}</div>${renderApprovalBadge(p.approval_status)}</td>
-      <td><button class="crumb-link" data-open-client="${esc(p.client_id)}" onclick="event.stopPropagation()">${esc(p.client_name)}</button></td>
-      <td>📍 ${esc(addr(p))}</td>
-      <td>${renderStatusBadge(p.project_status)}</td>
-      <td>${p._stats.count}</td>
-      <td><strong>${p._stats.actual}h</strong> / ${p._stats.planned}h</td>
-      ${!isEmployee() ? `<td>${debtBadge(p.debt) || `<span class="inv-note">—</span>`}</td>` : ""}
-    </tr>`).join("");
-
-  const cards = list.map(p => mobCard({
-    open: `data-open-project="${esc(p.id)}"`,
-    title: esc(p.name),
-    right: debtBadge(p.debt),
-    sub: `👤 ${esc(p.client_name)}<br>📍 ${esc(addr(p))}`,
-    extra: `<div class="mob-card-row">${renderStatusBadge(p.project_status)} ${renderApprovalBadge(p.approval_status)}
-              <span class="inv-note">${p._stats.count} tasks · ${p._stats.actual}h / ${p._stats.planned}h</span></div>`,
-  })).join("");
-
-  return `
-    <div class="mobile-only list-tools">${sortSelect("projects", columns)}</div>
-    <div class="data-card desktop-table-view">
-      <div class="table-responsive">
-        <table class="crm-table">
-          <thead><tr>${Object.entries(columns).map(([k, [label]]) => sortTh("projects", k, label)).join("")}</tr></thead>
-          <tbody>${rows || `<tr><td colspan="7" class="empty-state">No projects found.</td></tr>`}</tbody>
-        </table>
-      </div>
-    </div>
-    <div class="mobile-card-list">${cards || `<div class="data-card empty-state">No projects found.</div>`}</div>`;
-}
-
-// One project: header with KPIs + tabs (Overview, Tasks, Estimate, Invoices, Expenses, Photos)
+// One project: info block (client, address, description, progress) + tabs (Tasks, Estimates & Invoices, Expenses, Photos)
 function renderProjectDetailView(projectId) {
   const p = state.projects.find(x => sameId(x.id, projectId));
   if (!p) return `<div class="empty-state">Project not found.</div>`;
@@ -1118,30 +986,18 @@ function renderProjectDetailView(projectId) {
   const pInvoices = state.invoices.filter(i => sameId(i.project_id, p.id));
   const pReceipts = state.receipts.filter(r => sameId(r.project_id, p.id));
 
-  const plannedHours = allPTasks.reduce((s, t) => s + t.planned_hours, 0);
-  const actualHours = allPTasks.reduce((s, t) => s + t.actual_hours, 0);
   const completedTasks = allPTasks.filter(t => t.status === "Completed").length;
   const progressPct = allPTasks.length ? Math.round((completedTasks / allPTasks.length) * 100) : 0;
 
-  // newest estimate (documents come newest first) vs. everything invoiced so far
-  const estValue = Number(pInvoices.find(i => i.is_estimate)?.total || 0);
-  const invoicedValue = pInvoices.filter(i => !i.is_estimate).reduce((s, i) => s + Number(i.total || 0), 0);
-
   $("pageTitle").textContent = p.name;
-  $("breadcrumbs").innerHTML = `
-    <button class="crumb-link" data-open-client="${esc(p.client_id)}">${esc(p.client_name)}</button>
-    ${debtBadge(state.clients.find(c => sameId(c.id, p.client_id))?.debt)} /
-    <span>${esc(p.name)}</span> ${debtBadge(p.debt)}
-  `;
   $("topbarActions").innerHTML = `
     <button class="btn" data-edit-project="${esc(p.id)}">✏️ Edit</button>
-    ${!isEmployee() ? `<button class="btn btn-danger" data-delete-entity="projects" data-delete-id="${esc(p.id)}" data-back-view="projects">🗑 Delete</button>` : ""}
+    ${!isEmployee() ? `<button class="btn btn-danger" data-delete-entity="projects" data-delete-id="${esc(p.id)}" data-back-view="clients">🗑 Delete</button>` : ""}
   `;
 
   const workAddr = [p.street, p.city, p.state, p.zip].filter(Boolean).join(", ") || "No job-site work address set";
 
   const tabs = [
-    ["overview", "Overview"],
     ["tasks", `Tasks (${pTasks.length})`],
     ...(!isEmployee() ? [["documents", `Estimates & Invoices (${pInvoices.length})`]] : []),
     ["expenses", `Expenses (${pReceipts.length})`],
@@ -1151,24 +1007,7 @@ function renderProjectDetailView(projectId) {
   ).join("");
 
   let tabContent = "";
-  if (state.projectTab === "overview") {
-    tabContent = `
-      <div class="section-card">
-        <div class="section-header"><h3 class="section-title">Project Info</h3></div>
-        <p style="margin-bottom:16px;color:var(--dark);white-space:pre-wrap;">${esc(p.clean_description || "No project description provided.")}</p>
-        <div style="margin-bottom:16px;">
-          <div style="display:flex;justify-content:space-between;font-size:14px;font-weight:600;margin-bottom:6px;">
-            <span>Task Completion Progress (${completedTasks}/${allPTasks.length})</span>
-            <span>${progressPct}%</span>
-          </div>
-          <div style="height:10px;background:var(--surface);border-radius:999px;overflow:hidden;border:1px solid var(--border);">
-            <div style="height:100%;width:${progressPct}%;background:var(--success);"></div>
-          </div>
-        </div>
-        <button class="btn btn-primary" data-proj-tab="tasks">View All Project Tasks →</button>
-      </div>
-    `;
-  } else if (state.projectTab === "tasks") {
+  if (state.projectTab === "tasks") {
     tabContent = `
       <div class="section-card">
         <div class="section-header">
@@ -1229,25 +1068,16 @@ function renderProjectDetailView(projectId) {
         ${renderStatusBadge(p.project_status)}
       </div>
 
-      <div class="kpi-grid" style="margin-top:18px;margin-bottom:0;">
-        <div class="kpi-card">
-          <div class="kpi-label">Tasks</div>
-          <div class="kpi-value">${allPTasks.length}</div>
+      <!-- project info (was the Overview tab): description + task progress -->
+      <p style="margin-top:14px;color:var(--dark);white-space:pre-wrap;">${esc(p.clean_description || "No project description provided.")}</p>
+      <div style="margin-top:14px;">
+        <div style="display:flex;justify-content:space-between;font-size:14px;font-weight:600;margin-bottom:6px;">
+          <span>Tasks done: ${completedTasks} of ${allPTasks.length}</span>
+          <span>${progressPct}%</span>
         </div>
-        <div class="kpi-card">
-          <div class="kpi-label">Working Hours</div>
-          <div class="kpi-value">${actualHours}h <span style="font-size:14px;color:var(--secondary);font-weight:400;">/ ${plannedHours}h plan</span></div>
+        <div style="height:10px;background:var(--surface);border-radius:999px;overflow:hidden;border:1px solid var(--border);">
+          <div style="height:100%;width:${progressPct}%;background:var(--success);"></div>
         </div>
-        ${!isEmployee() ? `
-          <div class="kpi-card">
-            <div class="kpi-label">Estimate</div>
-            <div class="kpi-value">${usd(estValue)}</div>
-          </div>
-          <div class="kpi-card" style="background:var(--success-bg);border-color:#BBF7D0;">
-            <div class="kpi-label" style="color:var(--success-text);">Invoiced</div>
-            <div class="kpi-value" style="color:var(--success-text);">${usd(invoicedValue)}</div>
-          </div>
-        ` : ""}
       </div>
     </div>
 
@@ -1563,7 +1393,7 @@ function renderOverview(o) {
           `<tr><td colspan="5" class="empty-state">No hours in this period.</td></tr>`}</tbody>
       </table></div>
       ${o.with_cost && state.team.some(m => m.active && !m.hourly_cost)
-        ? `<p class="inv-note" style="margin-top:8px;">Tip: set each person's cost per hour in Settings → Team for real labor cost.</p>` : ""}
+        ? `<p class="inv-note" style="margin-top:8px;">Tip: set each person's cost per hour in Team for real labor cost.</p>` : ""}
     </div>`;
 
   return `${money}<div class="report-two">${owed}${trend}</div>${jobsTable}${team}`;
@@ -1657,7 +1487,7 @@ function renderReportTable(d) {
   const head = `
     <div class="toolbar-card report-tools">
       <div class="fin-filter" style="margin:0;">
-        <input type="search" class="form-input" data-money-search="1" placeholder="🔍 Search this report..." value="${esc(state.search)}">
+        <input type="search" class="form-input" data-search="1" placeholder="🔍 Search this report..." value="${esc(state.search)}">
         <button class="btn btn-sm mobile-only ${activeFilters ? "btn-primary" : ""}" data-money-more="1">
           ⚙ Filters &amp; download${activeFilters ? ` (${activeFilters})` : ""}</button>
         <div class="money-more ${state.moneyMore ? "open" : ""}">
@@ -1737,7 +1567,7 @@ function moneyToolbar(tab) {
     <div class="toolbar-card money-toolbar">
       <div class="chip-row">${chips.join("")}</div>
       <div class="fin-filter">
-        <input type="search" class="form-input" data-money-search="1" placeholder="🔍 Search client, project, number, store..." value="${esc(state.search)}">
+        <input type="search" class="form-input" data-search="1" placeholder="🔍 Search client, project, number, store..." value="${esc(state.search)}">
         <!-- phone: dates & sort fold away so the pinned bar stays small -->
         <button class="btn btn-sm mobile-only ${m.start || m.end ? "btn-primary" : ""}" data-money-more="1">
           📅 Dates &amp; sort${m.start || m.end ? " •" : ""}</button>
@@ -1998,7 +1828,7 @@ function renderSettingsView() {
       ${isOwner() ? `<div style="margin-top:18px;"><button class="btn btn-primary" data-action="save-settings">Save Company &amp; Rules</button></div>` : ""}
     </div>`;
 
-  return account + company + rules + renderTeamSection();
+  return account + company + rules;   // the team has its own menu item (Team)
 }
 
 // Team table inside Settings. Owner: change role, deactivate, new temporary password. Manager: read only.
@@ -2053,19 +1883,92 @@ function closeModal() {
   $("modalOverlay").hidden = true;
 }
 
-// ---------- Task Create / Edit Modal (Supports Inline New Project + New Client!) ----------
-function showTaskModal(existingTask = null, defaultProjectId = null) {
-  const isEdit = Boolean(existingTask);
-  const hasProjects = state.projects.length > 0;
-  const hasClients = state.clients.length > 0;
-  const projId = existingTask?.project_id || defaultProjectId || state.projects[0]?.id || "__new__";
+// ---------- Project picker inside the task form (the ONLY place where a project is created) ----------
+// The project we last worked on: the newest task date up to today (for one client, or for everybody).
+// No work yet -> the newest project.
+function lastWorkedProject(clientId = null) {
+  const today = todayStr();
+  const lastWork = p => state.tasks
+    .filter(t => sameId(t.project_id, p.id) && t.status !== "Canceled" && t.visit_date && t.visit_date <= today)
+    .reduce((max, t) => (t.visit_date > max ? t.visit_date : max), "");
+  return state.projects
+    .filter(p => !clientId || sameId(p.client_id, clientId))
+    .map(p => ({ p, work: lastWork(p), created: p.created_at || "" }))
+    .sort((a, b) => b.work.localeCompare(a.work) || b.created.localeCompare(a.created))[0]?.p || null;
+}
 
-  const projOpts = state.projects.map(p =>
-    `<option value="${esc(p.id)}" ${sameId(p.id, projId) ? "selected" : ""}>${esc(p.client_name)} — ${esc(p.name)}</option>`
-  ).join("");
+const projectLabel = p => (p ? `${p.client_name} — ${p.name}` : "");
+
+// The client's notes (without hidden extras), used to start a new task's instructions
+const clientNotes = clientId => state.clients.find(c => sameId(c.id, clientId))?.clean_notes || "";
+
+// The task's client changed (another project / client picked): swap in that client's notes,
+// but only while the instructions still hold the notes we put there (never overwrite what the user typed)
+function refreshTaskNotes(clientId) {
+  const box = $("mTaskDesc");
+  if (!box || box.value !== box.dataset.autoNotes) return;
+  box.value = box.dataset.autoNotes = clientNotes(clientId);
+}
+
+// The list under the search box:  ➕ Create new project  ·  this client's projects  ·  every other client A→Z.
+// Typing filters by client or project name; nothing found -> only the big "Create project" button.
+function renderProjectPicker(query, clientId) {
+  const q = query.trim().toLowerCase();
+  const match = p => !q || p.name.toLowerCase().includes(q) || String(p.client_name).toLowerCase().includes(q);
+  const item = p => `<button type="button" class="picker-item" data-pick-project="${esc(p.id)}">${esc(p.name)}</button>`;
+  const create = `<button type="button" class="picker-item picker-create" data-pick-project="__new__">
+    ➕ Create new project${q ? ` “${esc(query.trim())}”` : ""}</button>`;
+
+  const mine = clientId ? state.projects.filter(p => sameId(p.client_id, clientId) && match(p)) : [];
+  const others = {};
+  state.projects.filter(p => !(clientId && sameId(p.client_id, clientId)) && match(p))
+    .forEach(p => (others[p.client_name] ||= []).push(p));
+  const client = state.clients.find(c => sameId(c.id, clientId));
+
+  const groups = [
+    ...(mine.length ? [`<div class="picker-group">${esc(client?.name || "This client")}</div>${
+      mine.sort((a, b) => a.name.localeCompare(b.name)).map(item).join("")}`] : []),
+    ...Object.keys(others).sort((a, b) => a.localeCompare(b)).map(name =>
+      `<div class="picker-group">${esc(name)}</div>${others[name].sort((a, b) => a.name.localeCompare(b.name)).map(item).join("")}`),
+  ];
+  return create + (groups.join("") || `<div class="picker-empty">No client or project matches “${esc(query.trim())}”.</div>`);
+}
+
+// Show / hide the "new project" fields under the picker
+function setPickedProject(id) {
+  const p = state.projects.find(x => sameId(x.id, id));
+  $("mTaskProject").value = p ? p.id : "__new__";
+  $("inlineNewProjectWrap").hidden = Boolean(p);
+  $("mTaskProjectList").hidden = true;
+  if (p) {
+    $("mTaskProjectSearch").value = projectLabel(p);
+    refreshTaskNotes(p.client_id);
+  } else {
+    // new project: what was typed becomes its name, unless it was a client's name (then that client is chosen)
+    const typed = $("mTaskProjectSearch").value.trim();
+    const client = state.clients.find(c => c.name.toLowerCase() === typed.toLowerCase());
+    if (client) $("mTaskInlineClient").value = client.id;
+    else if (typed && !$("mInlineProjName").value) $("mInlineProjName").value = typed;
+    refreshTaskNotes($("mTaskInlineClient").value);
+    $("mTaskProjectSearch").value = "➕ New project";
+    $("mInlineProjName").focus();
+  }
+}
+
+// ---------- Task Create / Edit Modal (Supports Inline New Project + New Client!) ----------
+// clientId: the client card you were on (+ New from a client) -> its projects come first and are the default
+function showTaskModal(existingTask = null, defaultProjectId = null, clientId = null) {
+  const isEdit = Boolean(existingTask);
+  const hasClients = state.clients.length > 0;
+  const defaultProject = existingTask ? state.projects.find(p => sameId(p.id, existingTask.project_id))
+    : state.projects.find(p => sameId(p.id, defaultProjectId)) || lastWorkedProject(clientId);
+  const projId = defaultProject?.id || "__new__";
+  const pickerClient = clientId || defaultProject?.client_id || null;   // "this client" at the top of the list
+  // a new task starts with the client's notes (gate code, dog...) in its instructions; the user may delete them
+  const startNotes = isEdit ? existingTask.description : clientNotes(defaultProject?.client_id || clientId);
 
   const clientOpts = state.clients.map(c =>
-    `<option value="${esc(c.id)}">${esc(c.name)}</option>`
+    `<option value="${esc(c.id)}" ${sameId(c.id, pickerClient) ? "selected" : ""}>${esc(c.name)}</option>`
   ).join("");
 
   // who does it: any active team member (Employees always do their own tasks)
@@ -2082,16 +1985,16 @@ function showTaskModal(existingTask = null, defaultProjectId = null) {
         <input id="mTaskTitle" class="form-input" placeholder="e.g., Install kitchen sink faucet" value="${esc(existingTask?.title || "")}">
       </div>
 
-      <div class="form-field wide">
-        <label>Project *</label>
-        <select id="mTaskProject" class="form-select" ${isEdit ? "disabled" : ""}>
-          ${projOpts}
-          ${!isEdit ? `<option value="__new__" ${!hasProjects ? "selected" : ""}>➕ Create New Project...</option>` : ""}
-        </select>
+      <div class="form-field wide picker" data-picker-client="${esc(pickerClient || "")}">
+        <label>Client / Project *</label>
+        <input id="mTaskProjectSearch" class="form-input" autocomplete="off" ${isEdit ? "disabled" : ""}
+          placeholder="Type a client or project name..." value="${esc(defaultProject ? projectLabel(defaultProject) : "➕ New project")}">
+        <input type="hidden" id="mTaskProject" value="${esc(projId)}">
+        <div id="mTaskProjectList" class="picker-list" hidden></div>
       </div>
 
-      <!-- Inline Project & Client Creation Box (No need to leave the Task modal!) -->
-      <div id="inlineNewProjectWrap" class="inline-create-box form-field wide" ${!isEdit && !hasProjects ? "" : "hidden"}>
+      <!-- New project (and, if needed, new client) right inside the task form -->
+      <div id="inlineNewProjectWrap" class="inline-create-box form-field wide" ${!isEdit && projId === "__new__" ? "" : "hidden"}>
         <div class="inline-create-title">📁 New Project Setup</div>
         <div class="form-grid">
           <div class="form-field wide">
@@ -2152,7 +2055,9 @@ function showTaskModal(existingTask = null, defaultProjectId = null) {
       </div>
       <div class="form-field wide">
         <label>Detailed Instructions / Notes</label>
-        <textarea id="mTaskDesc" class="form-textarea" rows="3" placeholder="Tools needed, customer gate code, scope details...">${esc(existingTask?.description || "")}</textarea>
+        <textarea id="mTaskDesc" class="form-textarea" rows="3" placeholder="Tools needed, customer gate code, scope details..."
+          data-auto-notes="${isEdit ? "" : esc(startNotes)}">${esc(startNotes || "")}</textarea>
+        ${isEdit ? "" : `<small style="color:var(--secondary);">The client's notes are added here — delete what this task doesn't need.</small>`}
       </div>
     </div>`,
     `<button class="btn" onclick="closeModal()">Cancel</button>
@@ -2515,7 +2420,7 @@ async function handleSaveClientModal(clientId) {
   }
 }
 
-// ---------- Project Create / Edit Modal (Also Supports Inline New Client!) ----------
+// ---------- Project EDIT form (new projects are created only inside the task form - see the project picker) ----------
 function showProjectModal(existingProject = null, defaultClientId = null) {
   const isEdit = Boolean(existingProject);
   const hasClients = state.clients.length > 0;
@@ -2699,7 +2604,7 @@ function currentContext() {
 
 function showNewMenu() {
   const items = [
-    ["task", "☑️", "Task"], ["client", "👥", "Client"], ["project", "📁", "Project"],
+    ["task", "☑️", "Task"], ["client", "👥", "Client"],   // a project is created inside the task form only
     ["receipt", "💳", "Receipt"], ["photo", "📸", "Photo"],
     ...(!isEmployee() ? [["estimate", "📋", "Estimate"], ["invoice", "🧾", "Invoice"]] : []),
     ...(isOwner() ? [["member", "👷", "Team member"]] : []),
@@ -2710,9 +2615,8 @@ function showNewMenu() {
 
 function handleNewChoice(kind) {
   const ctx = currentContext();
-  if (kind === "task") return showTaskModal(null, ctx.projectId);
+  if (kind === "task") return showTaskModal(null, ctx.projectId, ctx.clientId);
   if (kind === "client") return showClientModal();
-  if (kind === "project") return showProjectModal(null, ctx.clientId);
   if (kind === "receipt") return showExpenseModal(ctx);
   if (kind === "photo") return showPhotoModal(ctx);
   if (kind === "estimate" || kind === "invoice") return showDocumentModal(kind, ctx);
@@ -2753,7 +2657,7 @@ async function uploadChosenPhotos(input, entity, rowId) {
 
 // ---------- Receipt form (project required, task optional, photo optional) ----------
 function showExpenseModal(ctx = {}) {
-  if (!state.projects.length) return alert("Create a project first (+ New → Project).");
+  if (!state.projects.length) return alert("Create a task first (+ New → Task) - its project is created in the same form.");
   openModal(
     "New Receipt",
     `<div class="form-grid">
@@ -2882,7 +2786,7 @@ async function handleSavePhotos(btn) {
 
 // ---------- New estimate / invoice: pick the project, the server fills the lines ----------
 function showDocumentModal(kind, ctx = {}) {
-  if (!state.projects.length) return alert("Create a project first (+ New → Project).");
+  if (!state.projects.length) return alert("Create a task first (+ New → Task) - its project is created in the same form.");
   const isInv = kind === "invoice";
   openModal(
     isInv ? "New Invoice" : "New Estimate",
@@ -3171,10 +3075,10 @@ document.addEventListener("click", async e => {
   if (t.closest("#refreshDataBtn") || t.closest('[data-action="sync"]')) return syncCRM();
   if (t.closest("#modalCloseBtn")) return closeModal();
 
-  if (t.closest('[data-action="toggle-mob-filters"]')) {
-    state.showMobileFilters = !state.showMobileFilters;
-    return renderCurrentView();
-  }
+  // Project picker in the task form: pick an item; a click anywhere else closes the list
+  if ((el = t.closest("[data-pick-project]"))) return setPickedProject(el.dataset.pickProject);
+  if ($("mTaskProjectList") && !$("mTaskProjectList").hidden && !t.closest(".picker")) closeProjectPicker();
+
 
   // Entity Opening
   if ((el = t.closest("[data-open-task]"))) return navigate("task-detail", el.dataset.openTask);
@@ -3187,11 +3091,7 @@ document.addEventListener("click", async e => {
     return hydrateFinance();
   }
 
-  // Task Quick Filter Chips & Project Tabs
-  if ((el = t.closest("[data-task-chip]"))) {
-    state.taskQuickChip = el.dataset.taskChip;
-    return renderCurrentView();
-  }
+  // Project tabs
   if ((el = t.closest("[data-proj-tab]"))) {
     state.projectTab = el.dataset.projTab;
     return renderCurrentView();
@@ -3241,7 +3141,6 @@ document.addEventListener("click", async e => {
   if (t.closest("[data-money-clear]")) {
     state.money = { type: "all", status: "all", start: "", end: "" };
     state.search = "";
-    $("globalSearchInput").value = "";
     return renderCurrentView();
   }
 
@@ -3441,22 +3340,26 @@ document.addEventListener("click", async e => {
 });
 
 // ---------- Global Input & Filter Change Listeners ----------
-// Search box (top bar on desktop, inside the Tasks screen on phones). Only list screens are filtered.
+// The search box of each screen (one per screen, right above its table: Tasks, Clients, Money, reports)
 document.addEventListener("input", e => {
   const t = e.target;
-  const inScreen = t.id === "mobileSearchInput" || t.dataset.moneySearch;   // search boxes drawn inside the screen
-  if (t.id === "globalSearchInput" || inScreen) {
+  if (t.dataset.search) {
     state.search = t.value;
-    if (inScreen && $("globalSearchInput")) $("globalSearchInput").value = t.value;
-    if (!["tasks", "clients", "projects", "money"].includes(state.view)) return;
     const caret = t.selectionStart;
     renderCurrentView();
-    // a search box inside the redrawn screen gets its focus and cursor position back
-    const again = t.id === "mobileSearchInput" ? $("mobileSearchInput") : document.querySelector("[data-money-search]");
-    if (inScreen && again) {
+    // the box is part of the redrawn screen: give it back the focus and the cursor position
+    const again = document.querySelector("[data-search]");
+    if (again) {
       again.focus();
       again.setSelectionRange(caret, caret);
     }
+    return;
+  }
+
+  // Project picker: typing filters clients / projects
+  if (t.id === "mTaskProjectSearch") {
+    $("mTaskProjectList").innerHTML = renderProjectPicker(t.value, t.closest(".picker").dataset.pickerClient);
+    $("mTaskProjectList").hidden = false;
     return;
   }
 
@@ -3473,14 +3376,10 @@ document.addEventListener("change", async e => {
   const t = e.target;
 
   // Dynamic Inline Toggles inside Modals
-  if (t.id === "mTaskProject") {
-    const wrap = $("inlineNewProjectWrap");
-    if (wrap) wrap.hidden = t.value !== "__new__";
-    return;
-  }
   if (t.id === "mTaskInlineClient") {
     const wrap = $("inlineNewClientWrap");
     if (wrap) wrap.hidden = t.value !== "__new__";
+    refreshTaskNotes(t.value);   // new project for another client -> that client's notes
     return;
   }
   if (t.id === "mProjClient") {
@@ -3549,15 +3448,40 @@ document.addEventListener("change", async e => {
   }
 
   // Unified Task List Dropdown Filters
-  if (t.id === "fltStatus") { state.filterStatus = t.value; return renderCurrentView(); }
-  if (t.id === "fltPriority") { state.filterPriority = t.value; return renderCurrentView(); }
-  if (t.id === "fltClient") { state.filterClient = t.value; return renderCurrentView(); }
-  if (t.id === "fltProject") { state.filterProject = t.value; return renderCurrentView(); }
   if (t.id === "fltAssignee") { state.filterAssignee = t.value; return renderCurrentView(); }
 });
 
+// Project picker: opening it shows the whole list (text selected, so typing replaces it)
+document.addEventListener("focusin", e => {
+  if (e.target.id !== "mTaskProjectSearch") return;
+  e.target.select();
+  $("mTaskProjectList").innerHTML = renderProjectPicker("", e.target.closest(".picker").dataset.pickerClient);
+  $("mTaskProjectList").hidden = false;
+});
+
+// Close the picker list and show the chosen project again
+function closeProjectPicker() {
+  $("mTaskProjectList").hidden = true;
+  const p = state.projects.find(x => sameId(x.id, $("mTaskProject").value));
+  $("mTaskProjectSearch").value = p ? projectLabel(p) : "➕ New project";
+}
+
 // Close Lightbox or Modal on Escape
 document.addEventListener("keydown", e => {
+  // in the project picker: Enter = take the first project found (or "create"), Escape = close only the list
+  if (e.target.id === "mTaskProjectSearch" && !$("mTaskProjectList").hidden) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const first = $("mTaskProjectList").querySelector("[data-pick-project]:not([data-pick-project='__new__'])")
+        || $("mTaskProjectList").querySelector("[data-pick-project]");
+      if (first) setPickedProject(first.dataset.pickProject);
+      return;
+    }
+    if (e.key === "Escape") {
+      closeProjectPicker();
+      return;
+    }
+  }
   if (e.key === "Escape") {
     document.querySelector(".lightbox")?.remove();
     closeModal();
@@ -3588,7 +3512,7 @@ function renderAuthScreen(mode, message = "") {
       <label>Password<input id="authPassword" type="password" class="form-input"
         autocomplete="${setup ? "new-password" : "current-password"}" minlength="${setup ? 8 : 1}" required></label>
       <button class="btn btn-primary" type="submit" id="authSubmit">${setup ? "Create Account" : "Sign In"}</button>
-      ${setup ? "" : `<p class="auth-hint">Forgot your password? Ask the Owner for a new one (Settings → Team).</p>`}
+      ${setup ? "" : `<p class="auth-hint">Forgot your password? Ask the Owner for a new one (Team → New Password).</p>`}
     </form>`;
   $("authEmail").focus();
 }

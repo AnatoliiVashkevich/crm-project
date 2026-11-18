@@ -59,8 +59,10 @@ The tests use a fake database: no keys or internet needed.
 * **Logins and roles:** email + password through Supabase Auth; people are in the `team_members` table.
   The server enforces the roles: Employees only receive their own tasks and receipts and never any money data;
   only the Owner changes settings and the team; Manager invoices wait for the Owner (when approvals are on).
-* **One "+ New" button** (top right, round `+` on phones) creates everything: task, client, project, receipt,
+* **One "+ New" button** (top right, round `+` on phones) creates everything: task, client, receipt,
   photo, estimate, invoice, team member. It pre-fills the client / project / task of the screen you are on.
+  A project is created only inside the task form (type to search clients / projects, or "Create new project");
+  there is no Projects menu - projects open from the client card.
 * **Estimates and invoices are one document type** with line items (table `invoices`, column `kind`).
   A new estimate lists the project's planned tasks; "→ Invoice" turns it into an invoice. A new invoice starts
   from the estimate (first invoice) or from completed tasks nobody billed yet, plus billable receipts.
@@ -71,7 +73,7 @@ The tests use a fake database: no keys or internet needed.
 * **Reports (Money → Reports, `reports.py`):** Overview (making money vs. previous period, who owes me as of today,
   12-month trend, job profit with $/hour, team hours) + detailed reports Income, Expenses, Who owes me, Job profit,
   Team hours. Each one: period, filters, group by, ⚙ columns (remembered), sortable titles, totals, CSV / PDF of
-  exactly what is shown. Cash basis; profit subtracts labor = hours × each person's cost per hour (Settings → Team,
+  exactly what is shown. Cash basis; profit subtracts labor = hours × each person's cost per hour (Team menu,
   Owner only — Managers see reports without cost and profit).
 * **Income & Expense export:** the CSV / PDF buttons in the report panel (Money → Reports, or a client) download
   every income and expense line with totals, for the same period and scope (`report_export.py`).

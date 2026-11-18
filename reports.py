@@ -3,7 +3,7 @@
 Rules (decided with the owner):
   * Cash basis: income counts when the client PAID (paid date). Unpaid invoices are "who owes me".
   * "Who owes me" is as of TODAY - it never hides behind the selected period.
-  * Labor cost = task hours x the cost per hour of the person assigned (Settings > Team, Owner only).
+  * Labor cost = task hours x the cost per hour of the person assigned (Team menu, Owner only).
     Profit = paid - materials (receipts) - labor cost.  $/hour = (paid - materials) / hours worked.
   * Estimates are never money.
 
